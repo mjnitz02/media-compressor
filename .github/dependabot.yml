@@ -1,11 +1,36 @@
-# To get started with Dependabot version updates, you'll need to specify which
-# package ecosystems to update and where the package manifests are located.
-# Please see the documentation for all configuration options:
-# https://docs.github.com/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
-
 version: 2
 updates:
-  - package-ecosystem: "" # See documentation for possible values
-    directory: "/" # Location of package manifests
+  # 1. Go Modules Configuration
+  - package-ecosystem: "gomod"
+    directory: "/"
     schedule:
       interval: "weekly"
+      day: "monday"             # Run every Monday
+      time: "09:00"             # Run at 9:00 AM UTC
+      timezone: "America/New_York"
+
+    # Set the maximum number of open version update PRs at any time
+    open-pull-requests-limit: 5
+
+    # Automatically assign labels to the created PRs
+    labels:
+      - "dependencies"
+      - "go"
+
+    # Group related dependencies to avoid PR fatigue
+    groups:
+      # Combine all golang.org/x/* package updates into one PR
+      golang-x-packages:
+        patterns:
+          - "golang.org/x/*"
+      # Combine all AWS SDK updates into one PR
+      aws-sdk-go:
+        patterns:
+          - "://github.com*"
+
+  # 2. GitHub Actions Configuration (Optional but recommended)
+  # Keeps your CI/CD workflow dependencies up-to-date
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
