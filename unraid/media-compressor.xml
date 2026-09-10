@@ -1,0 +1,66 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>media-compressor</Name>
+  <Repository>ghcr.io/mjnitz02/media-compressor:latest</Repository>
+  <Registry>https://github.com/mjnitz02/media-compressor/pkgs/container/media-compressor</Registry>
+  <Network>bridge</Network>
+  <MyIP/>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/mjnitz02/media-compressor/issues</Support>
+  <Project>https://github.com/mjnitz02/media-compressor</Project>
+  <Overview>
+    Keeps a media library encoded as HEVC in MKV, with unwanted audio and
+    subtitle tracks removed. Files are replaced in place, under the same name,
+    and never moved between folders.
+
+    It declines far more files than it touches, on purpose: already HEVC,
+    a bitrate too low to cut without visible loss, or any risk of losing a
+    track that mattered all mean the file is left alone. The web UI's
+    Decisions page is where you read why, in the words the decision engine
+    produced.
+
+    On first start it writes config.example.yaml into the config folder and
+    stops, because there is nothing safe to do before being told which folders
+    to look at. Copy that to config.yaml, point its libraries at the media
+    paths you mapped below, and start it again.
+
+    Requires an Intel GPU passed through at /dev/dri for hardware encoding.
+    Without one, set encoder: libx265 in the config and it will encode on the
+    CPU instead.
+  </Overview>
+  <Category>MediaApp:Video Tools:Utilities</Category>
+  <WebUI>http://[IP]:[PORT:8080]/</WebUI>
+  <TemplateURL>https://raw.githubusercontent.com/mjnitz02/media-compressor/main/unraid/media-compressor.xml</TemplateURL>
+  <ExtraParams/>
+  <PostArgs/>
+  <CPUset/>
+  <DateInstalled/>
+  <DonateText/>
+  <DonateLink/>
+  <Requires>An Intel GPU at /dev/dri for hardware encoding.</Requires>
+
+  <Config Name="WebUI" Target="8080" Default="8080" Mode="tcp"
+          Description="The status pages: what is queued, what was left alone and why, and what has been replaced. There is no login, so keep this on the LAN."
+          Type="Port" Display="always" Required="true" Mask="false">8080</Config>
+
+  <Config Name="Config" Target="/config" Default="/mnt/user/appdata/media-compressor" Mode="rw"
+          Description="config.yaml and the SQLite database of what has been seen, decided and done."
+          Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/media-compressor</Config>
+
+  <Config Name="Work dir" Target="/temp" Default="/mnt/user/appdata/media-compressor/temp" Mode="rw"
+          Description="Scratch space for in-progress encodes. Note that a separate mount can never be renamed from into the media, so in this layout the temp file goes beside the file being replaced instead and this mount goes unused. That is safe and is what the startup note in the log is saying. To really use fast scratch space, set paths.work_dir to a directory inside one of the media mappings."
+          Type="Path" Display="advanced" Required="false" Mask="false">/mnt/user/appdata/media-compressor/temp</Config>
+
+  <Config Name="Media" Target="/mnt/media_video" Default="/mnt/user/media_video" Mode="rw"
+          Description="Your media, read-write, mapped at the path config.yaml names. Files are replaced in place under the same name and are never moved between folders. Add another mapping for each additional media share."
+          Type="Path" Display="always" Required="true" Mask="false">/mnt/user/media_video</Config>
+
+  <Config Name="Intel GPU" Target="/dev/dri" Default="/dev/dri" Mode=""
+          Description="The render node, for hevc_vaapi and hevc_qsv. Leave it out only if you have set encoder: libx265 in the config."
+          Type="Device" Display="always" Required="false" Mask="false">/dev/dri</Config>
+
+  <Config Name="TZ" Target="TZ" Default="America/New_York" Mode=""
+          Description="Timezone, so the times on the History page are yours."
+          Type="Variable" Display="always" Required="false" Mask="false">America/New_York</Config>
+</Container>

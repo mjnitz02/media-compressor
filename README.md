@@ -25,18 +25,19 @@ container and a plugin runtime to issue roughly one ffmpeg command per week.
 
 ## Status
 
-**Phases 1 through 5 complete.** The decision engine is written and green
-against the golden corpus, it can be driven from a YAML file, it can carry out
-what it decides, it runs itself — a background scanner that remembers what it
-has seen, and two worker pools that do the work — and it now shows you what it
-is doing on a web page.
+**Phases 1 through 6 complete — this is finished.** The decision engine is
+written and green against the golden corpus, it can be driven from a YAML
+file, it can carry out what it decides, it runs itself — a background scanner
+that remembers what it has seen, and two worker pools that do the work — it
+shows you what it is doing on a web page, and it ships as a 394 MB container
+with an ffmpeg that can talk to an Intel GPU.
 
 | Package | What it does | Coverage |
 |---|---|---|
 | `internal/probe` | ffprobe types and the one function that runs it | 94.7% |
 | `internal/decide` | every quality decision, no I/O at all | 96.3% |
 | `internal/config` | YAML to profiles and libraries, and the checks on it | 98.4% |
-| `internal/encode` | run the plan, verify it, replace the original | 88.9% |
+| `internal/encode` | run the plan, verify it, replace the original | 89.6% |
 | `internal/scan` | find the candidate files under a library's paths | 92.0% |
 | `internal/store` | what has been seen, what was decided, what was done | 85.0% |
 | `internal/queue` | two worker pools: I/O-bound remuxes, GPU-bound encodes | 88.1% |
@@ -45,7 +46,7 @@ is doing on a web page.
 | `internal/web` | the status pages, and the two buttons | 79.7% |
 | `internal/human` | bytes and durations, formatted the same way everywhere | 96.8% |
 
-`go test ./...` runs 285 tests. The headline one is `TestGoldenCorpus`, which
+`go test ./...` runs 291 tests. The headline one is `TestGoldenCorpus`, which
 replays all **1,881** real decisions recorded from the Tdarr install this
 replaces and asserts three things per file: the same video decision, the same
 bitrate arithmetic to the kbps, and the **same ffmpeg arguments token for
@@ -171,11 +172,75 @@ There is no login, as there was none on the stack this replaces: put it on a
 LAN. A cross-origin POST is refused, so a page on another site cannot start an
 encode in your browser, but that is the extent of it.
 
-Still to build: the container. See [docs/plan.md](docs/plan.md).
+### Running it in a container
+
+```
+docker run -d --name media-compressor \
+  --device /dev/dri \
+  -p 8080:8080 \
+  -v /mnt/user/appdata/media-compressor:/config \
+  -v /mnt/user/media_video:/mnt/media_video \
+  ghcr.io/mjnitz02/media-compressor:latest
+```
+
+There is a [`docker-compose.yml`](docker-compose.yml) to start from, and an
+Unraid Community Applications template in
+[`unraid/`](unraid/media-compressor.xml).
+
+**The first start writes `config.example.yaml` into `/config` and stops**,
+because there is nothing safe to do before being told which folders to look
+at. Copy it to `config.yaml`, point its libraries at the paths you mounted,
+and start it again. The example is rewritten on every start, so after an
+upgrade the file beside your config always documents the schema the running
+binary understands.
+
+The image is `debian:bookworm-slim` plus
+[jellyfin-ffmpeg](https://github.com/jellyfin/jellyfin-ffmpeg), pinned by
+version and SHA256, and the 14 MB binary. 394 MB, of which ffmpeg and the
+Intel media stack are 380. **linux/amd64 only** — QSV and VAAPI are Intel x86,
+and an arm64 image would imply hardware transcoding it could not do.
+
+Three things are worth knowing before the first run:
+
+**`/dev/dri` or a software encoder.** `hevc_vaapi` and `hevc_qsv` need the
+render node passed through. Without it the container warns at startup and then
+fails on every file it tries to encode, so either pass the device or set
+`encoder: libx265` in the config. `docker exec media-compressor vainfo` will
+tell you whether the GPU arrived.
+
+**It runs as root, deliberately.** Every replacement adopts the original
+file's owner, and `chown` to an arbitrary uid needs `CAP_CHOWN`. Running with
+`--user` is safe — the encode is verified before the replace either way — but
+replaced files then take the container's uid, and the run records a note
+saying it could not set the owner. On a share read by Plex, the \*arr stacks
+and SMB, that is a support call waiting to happen.
+
+**A separately mounted `/temp` will not be used, and that is fine.** The last
+step of a replace is a `rename()`, which is what makes the swap atomic, and
+`rename(2)` refuses to cross a mount point even when both sides are the same
+disk. So a `/temp` mounted separately from the media cannot be renamed out of.
+`run` and `daemon` test this at startup by trying it and say so in the log; the
+in-progress encode then goes beside the file being replaced, which is safe and
+costs nothing but the write landing on the media disk. To really use fast
+scratch space, point `paths.work_dir` at a directory *inside* one of the media
+mounts.
+
+### Building it yourself
+
+```
+go build ./cmd/media-compressor          # the binary
+docker build -t media-compressor .       # the image
+```
 
 Requires Go 1.27+ and ffmpeg. No node, and no frontend build step: the pages
 are `html/template`, one stylesheet and one vendored copy of HTMX, all compiled
 into the binary.
+
+Every push runs gofmt, `go vet` and `go test -race`, and builds the image and
+checks that `hevc_vaapi` and `hevc_qsv` are in it. A `v*` tag publishes the
+image to GHCR and attaches the bare linux/amd64 binary to the GitHub release,
+since the program is one static file that needs nothing but an ffmpeg on
+`PATH`.
 
 ## Documentation
 
@@ -186,6 +251,8 @@ into the binary.
 | [docs/plan.md](docs/plan.md) | Phased build plan |
 | [testdata/README.md](testdata/README.md) | The golden decision corpus and how it was made |
 | [config.example.yaml](config.example.yaml) | The configuration schema, and a working config to start from |
+| [docker-compose.yml](docker-compose.yml) | A working compose file, with the mounts explained |
+| [unraid/](unraid/media-compressor.xml) | The Unraid Community Applications template |
 
 ## Safety rules
 
@@ -207,8 +274,12 @@ These are non-negotiable and every phase must preserve them.
    container is proof it fits there, so a file that keeps its own container
    never loses a stream and never has a codec change forced on it. Only
    forcing a container can cost anything.
-2. **Encode to a temp path on the same filesystem**, then `rename()` over the
-   original so the swap is atomic.
+2. **Encode to a temp path that can be renamed over the original**, so the
+   swap is atomic. "Can be renamed" is stricter than "same filesystem" and is
+   established by trying it at startup rather than deduced from device
+   numbers: `rename(2)` refuses to cross a mount point even when both sides
+   are one disk. When the work dir fails that test the temp file goes beside
+   the source, which always passes it.
 3. **Verify before replacing:** output must ffprobe cleanly, its duration must
    be within ~1s of the source, expected streams must be present, and the file
    must not be implausibly small.

@@ -64,12 +64,52 @@ func truncate(s string, n int) string {
 	return s
 }
 
+// CanRenameInto reports whether a file created in workDir can be rename()d
+// into dir. It answers by doing it, because the question cannot be answered
+// any other way.
+//
+// sameFilesystem below is the reasoning version, and reasoning is not enough:
+// rename(2) fails with EXDEV between two *mount points*, not two filesystems,
+// and two bind mounts of one filesystem report the same st_dev while refusing
+// the rename between them. That is the ordinary container layout -- /temp and
+// the media arrive as separate -v mounts of the same host disk -- so the
+// device comparison says "same filesystem, use the work dir" and then every
+// encode fails at its very last step, having done all of the work first.
+//
+// The probe is a zero-byte dotfile, created in the work dir and renamed into
+// the media directory, which is exactly the operation being predicted. It is
+// run once at startup and never per file, and never at all in a dry run:
+// --dry-run writes nothing, including this.
+func CanRenameInto(workDir, dir string) error {
+	f, err := os.CreateTemp(workDir, ".mediacompressor.probe.*")
+	if err != nil {
+		return fmt.Errorf("creating a file in %s: %w", workDir, err)
+	}
+	from := f.Name()
+	f.Close()
+	// A no-op once the rename below has succeeded, and the cleanup when it
+	// has not.
+	defer os.Remove(from)
+
+	to := filepath.Join(dir, filepath.Base(from))
+	if err := os.Rename(from, to); err != nil {
+		return err
+	}
+	return os.Remove(to)
+}
+
 // sameFilesystem reports whether two directories are on the same filesystem.
 //
 // When it cannot tell -- either directory missing, or a platform that does not
 // report device numbers -- the answer is no, which routes the temp file beside
 // the source. That is the conservative direction: it is always correct, just
 // occasionally slower than it needed to be.
+//
+// It is a prediction, and the permissive direction of it can be wrong: see
+// CanRenameInto. This is what tempPath uses because tempPath runs during a
+// dry run, where nothing may be written. What a run actually relies on is the
+// probe, which has already cleared the work dir by the time Prepare is
+// reached.
 func sameFilesystem(a, b string) bool {
 	ai, err := os.Stat(a)
 	if err != nil {

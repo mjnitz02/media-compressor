@@ -613,17 +613,112 @@ There is no login, as there was none on the stack this replaces. A POST whose
 an encode in the operator's browser; that is the whole of the security model,
 and it is a LAN service.
 
-## Phase 6 — Docker + GHCR
+## Phase 6 — Docker + GHCR ✅ done
 
-- Multi-stage: `golang` build stage → runtime stage on `jellyfin-ffmpeg`
-  (maintained specifically for Intel QSV/VAAPI hardware transcoding).
-- Expect **~400–500 MB**. The Intel media driver stack is the bulk and cannot
-  be avoided. That is ~4x smaller than Tdarr, and every megabyte is accounted
-  for.
-- Requires `/dev/dri` passthrough.
-- GitHub Actions → GHCR on tag. Unraid template in `unraid/`.
-- Appdata layout: `/config` (config.yaml + SQLite), `/temp` (work dir),
-  media mounted read-write.
+Multi-stage: a `golang:1.27-bookworm` build stage that cross-compiles, and a
+`debian:bookworm-slim` runtime stage holding jellyfin-ffmpeg and nothing else.
+**394 MB**, against the 400–500 MB expected and ~2 GB for the Tdarr install
+this replaces.
+
+**Definition of done: met.** `docker run` it with a config, a media mount and
+`--device /dev/dri`, and it encodes. Verified end to end on real files, not
+only in tests: a clip generated in the image, planned, encoded and replaced in
+place; the daemon running with the web UI answering and its healthcheck green;
+`docker stop` shutting the loop down cleanly through SIGTERM.
+
+### jellyfin-ffmpeg brings its own Intel stack
+
+The reason it is the right base is not that it is a good ffmpeg — it is that
+its tree holds `lib/dri/iHD_drv_video.so`, libva, libvpl and libmfx-gen. So
+there is no non-free apt component to enable, no `intel-media-va-driver` to
+keep in step with the ffmpeg using it, and the driver and the encoder are
+upgraded by one pin. That pin is a version *and* a SHA256 in the Dockerfile,
+because an upgrade of the one component that touches the GPU should be a
+commit that says so rather than something a rebuild does quietly.
+
+The package deliberately keeps itself off `PATH` so it cannot collide with a
+distro ffmpeg. Nothing else in this image provides one, so it is symlinked
+into `/usr/local/bin` and the `-ffmpeg` / `-ffprobe` flags keep their
+defaults.
+
+### linux/amd64 only, deliberately
+
+QSV and VAAPI are Intel x86. An arm64 image would imply hardware transcoding
+it could not do, so the Dockerfile refuses any other architecture with a
+message saying why rather than building something misleading.
+
+### Root, deliberately
+
+Safety rule 11 gives every replacement the original file's owner, and `chown`
+to an arbitrary uid needs `CAP_CHOWN`. Running the image with `--user` still
+works and is still safe — the encode is verified before the replace either way
+— but replaced files then take the container's uid, and the run records a note
+saying it could not set the owner. On a share read by Plex, the \*arr stacks
+and SMB, that note is the difference between a working library and a support
+call.
+
+### What packaging found: `st_dev` is not the question
+
+The work dir was used whenever it was on the same filesystem as the media,
+decided by comparing device numbers. In the container that is wrong, and
+wrong in the expensive direction.
+
+`rename(2)` fails with `EXDEV` across two **mount points**, not two
+filesystems. Two bind mounts of one host disk report an identical `st_dev` and
+still refuse a rename between them — which is exactly the shipped layout,
+`/temp` and the media as separate `-v` mounts. So the comparison said "same
+filesystem, use the work dir", ffmpeg encoded the whole file into `/temp`, and
+the replace then failed at its very last step:
+
+```
+replacing /media/movies/Demo Film (2021).mkv: rename /temp/.Demo Film …partial.mkv
+  → /media/movies/Demo Film (2021).mkv: invalid cross-device link
+```
+
+Safe — the original was untouched and the failure was recorded and backed off
+— but it would have cost the entire encode, on every file, forever.
+
+The fix is to stop predicting and ask: `encode.CanRenameInto` creates a
+zero-byte dotfile in the work dir and renames it into the media directory,
+which is precisely the operation being predicted. `run` and `daemon` do it
+once at startup, per library root, and drop the work dir for that process when
+it fails, with a note saying so. `plan` never does it, because `--dry-run`
+writes nothing at all — so `tempPath` keeps the device comparison as its
+dry-run prediction, and what a real run relies on is the probe that has
+already cleared the work dir before `Prepare` is reached.
+
+The consequence for the operator is in the config comment now: a work dir is
+only worth setting when it is inside one of the media mounts. A fast scratch
+disk mounted separately is not scratch space, it is a different algorithm.
+
+### First start says what to do rather than crashing
+
+There is nothing safe to do without being told which folders to look at, so
+the entrypoint writes `config.example.yaml` into `/config` — refreshed on
+every start, so after an upgrade the example beside the real config documents
+the schema this binary actually understands — and exits saying to copy it.
+`version` and `help` are exempt: they answer without reading anything, and an
+unconfigured container is exactly the one somebody runs them against.
+
+It also warns when `/dev/dri` is absent, because a hardware encoder without a
+render node fails on every single file, one at a time, hours apart. Not fatal:
+the config may name `libx265`, and refusing to start would be this tool
+deciding it knows better than the file it was given.
+
+### CI
+
+`ci.yml` on every push and PR: gofmt, `go vet`, `go test -race`, and a build
+of the image, which then has to prove the three things it exists to provide —
+the binary runs, `ffprobe` is on `PATH`, and `ffmpeg -encoders` lists
+`hevc_vaapi` and `hevc_qsv`. ffmpeg is installed in the runner because the
+encoder's and runner's tests skip themselves without it, which would quietly
+retire the interesting half of the suite.
+
+`release.yml` on a `v*` tag: the tests again — a tag is the one build nobody
+gets to re-do — then GHCR, and the bare binary attached to the release with
+its SHA256, because the program is one static file that needs nothing but an
+ffmpeg on `PATH` and somebody running it outside Docker should not have to
+build it.
 
 ---
 

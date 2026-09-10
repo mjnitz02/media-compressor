@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -211,5 +213,78 @@ func TestReportSaysHowMuchCameFromTheCache(t *testing.T) {
 	rep.print(&buf, false)
 	if !strings.Contains(buf.String(), "1  answered from the last scan, not re-probed") {
 		t.Errorf("summary should say what was not re-probed:\n%s", buf.String())
+	}
+}
+
+// The work dir is only ever an optimisation: it saves writing the encode into
+// the media folder. When the final rename out of it would fail, keeping it
+// would cost the whole encode, so the run drops it and says so.
+func TestAWorkDirThatCannotBeRenamedFromIsDropped(t *testing.T) {
+	media := t.TempDir()
+	cfg := testConfig()
+	cfg.Paths.WorkDir = filepath.Join(t.TempDir(), "not-a-directory")
+	targets := []runner.Target{{Library: "movies", Roots: []string{media}}}
+
+	var out bytes.Buffer
+	checkWorkDir(cfg, targets, &out)
+
+	if cfg.Paths.WorkDir != "" {
+		t.Errorf("work dir = %q, want it dropped for this process", cfg.Paths.WorkDir)
+	}
+	// It has to say which directory and why, because the operator's next
+	// question is whether their mounts are wrong.
+	for _, want := range []string{"not using the work dir", media, "beside the file being replaced"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("the note does not mention %q:\n%s", want, out.String())
+		}
+	}
+}
+
+func TestAUsableWorkDirIsKept(t *testing.T) {
+	root := t.TempDir()
+	work := filepath.Join(root, "work")
+	media := filepath.Join(root, "media")
+	for _, d := range []string{work, media} {
+		if err := os.Mkdir(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	cfg := testConfig()
+	cfg.Paths.WorkDir = work
+
+	var out bytes.Buffer
+	checkWorkDir(cfg, []runner.Target{{Library: "movies", Roots: []string{media}}}, &out)
+
+	if cfg.Paths.WorkDir != work {
+		t.Errorf("work dir = %q, want it kept", cfg.Paths.WorkDir)
+	}
+	if out.Len() != 0 {
+		t.Errorf("a usable work dir should say nothing, got:\n%s", out.String())
+	}
+}
+
+// Somebody can point a run at one file rather than a library. The probe needs
+// a directory to rename into, so it takes that file's own.
+func TestTheWorkDirCheckAcceptsATargetThatIsAFile(t *testing.T) {
+	root := t.TempDir()
+	work := filepath.Join(root, "work")
+	media := filepath.Join(root, "media")
+	for _, d := range []string{work, media} {
+		if err := os.Mkdir(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	file := filepath.Join(media, "Film.mkv")
+	if err := os.WriteFile(file, []byte("not really"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := testConfig()
+	cfg.Paths.WorkDir = work
+	checkWorkDir(cfg, []runner.Target{{Roots: []string{file}}}, &bytes.Buffer{})
+
+	if cfg.Paths.WorkDir != work {
+		t.Errorf("work dir = %q, want it kept: the file's directory is renameable into", cfg.Paths.WorkDir)
 	}
 }

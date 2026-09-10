@@ -79,6 +79,10 @@ func runPass(args []string, mode runner.Mode) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	if mode == runner.ModeRun {
+		checkWorkDir(cfg, targets, os.Stderr)
+	}
+
 	opts := runner.Options{
 		Mode:             mode,
 		Limit:            *limit,
@@ -138,6 +142,51 @@ func openStore(cfg *config.Config, mode runner.Mode) (*store.Store, error) {
 	}
 	return db, nil
 }
+
+// checkWorkDir settles once, at startup, whether the configured work dir can
+// actually be used, and drops it from the config for this process when it
+// cannot.
+//
+// It is checked here rather than discovered per file because the failure it
+// prevents happens at the very last step of an encode -- the rename that
+// replaces the original -- and therefore costs the entire encode, every time,
+// for every file. Dropping the work dir puts the temp file beside the source
+// instead, which is what an unconfigured work dir does and is always safe.
+//
+// Only "run" and "daemon" ask: scanning writes no media, and a dry run may
+// not write at all.
+func checkWorkDir(cfg *config.Config, targets []runner.Target, w io.Writer) {
+	if cfg.Paths.WorkDir == "" {
+		return
+	}
+	for _, t := range targets {
+		for _, root := range t.Roots {
+			// A target can name a file rather than a directory, because
+			// somebody can point this at a single file.
+			dir := root
+			if info, err := os.Stat(dir); err == nil && !info.IsDir() {
+				dir = filepath.Dir(dir)
+			}
+			err := encode.CanRenameInto(cfg.Paths.WorkDir, dir)
+			if err == nil {
+				continue
+			}
+			fmt.Fprintf(w, workDirUnusable, cfg.Paths.WorkDir, dir, err)
+			// This process's answer to "where does the temp file go", not a
+			// change to anybody's configuration file.
+			cfg.Paths.WorkDir = ""
+			return
+		}
+	}
+}
+
+const workDirUnusable = `note: not using the work dir %s: a file in it cannot be renamed into %s
+  (%v)
+  In-progress encodes will go beside the file being replaced instead, which is
+  always safe and is exactly what happens with no work dir configured at all.
+  A work dir only helps when it is on the same *mount* as the media -- and in a
+  container, a /temp mounted separately from the media never is.
+`
 
 // newRunner assembles the collaborators for one config.
 func newRunner(cfg *config.Config, db *store.Store, ffmpegBin, ffprobeBin string) *runner.Runner {

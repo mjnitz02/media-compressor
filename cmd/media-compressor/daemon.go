@@ -58,6 +58,9 @@ func runDaemon(args []string) error {
 		every = *interval
 	}
 
+	targets := libraryTargets(cfg)
+	checkWorkDir(cfg, targets, os.Stderr)
+
 	db, err := openStore(cfg, runner.ModeRun)
 	if err != nil {
 		return err
@@ -77,7 +80,7 @@ func runDaemon(args []string) error {
 	live := newLiveOutput(os.Stdout, *verbose)
 	d := &daemon.Daemon{
 		Runner:   newRunner(cfg, db, *ffmpegBin, *ffprobeBin),
-		Targets:  libraryTargets(cfg),
+		Targets:  targets,
 		Options:  opts,
 		Interval: every,
 		OnEvent:  live.handle,

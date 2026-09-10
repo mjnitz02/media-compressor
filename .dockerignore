@@ -1,0 +1,35 @@
+# The build stage needs the module and the source. Nothing else.
+
+.git
+.github
+.gitignore
+
+# 27 MB of gzipped probe output that only `go test` reads. Keeping it out of
+# the build context is most of the difference in how long a build takes to
+# start.
+testdata
+
+docs
+unraid
+*.md
+
+# Local state, which must never be baked into an image: an operator's real
+# config, and a database naming every file in their library.
+config.yaml
+config.yml
+*.db
+*.db-wal
+*.db-shm
+/config/
+/temp/
+/data/
+
+# Build output from a host build.
+/media-compressor
+*.test
+*.out
+coverage.*
+
+.DS_Store
+.idea/
+.vscode/

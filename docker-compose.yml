@@ -1,0 +1,48 @@
+# A working compose file. Edit the media mounts and the device, then:
+#
+#   docker compose up -d          start it
+#   docker compose logs -f        watch a pass
+#   docker compose run --rm media-compressor plan -library movies
+#
+# The first start writes config/config.example.yaml and stops, because there
+# is nothing safe to do without being told which folders to look at. Copy it
+# to config/config.yaml, point its libraries at the paths below, start again.
+
+services:
+  media-compressor:
+    image: ghcr.io/mjnitz02/media-compressor:latest
+    container_name: media-compressor
+    restart: unless-stopped
+
+    devices:
+      # The Intel GPU. Without this, hevc_vaapi and hevc_qsv cannot run and
+      # the container says so at startup. Set encoder: libx265 in the config
+      # if this machine has no Intel GPU and you want to encode on the CPU.
+      - /dev/dri:/dev/dri
+
+    ports:
+      - "8080:8080"
+
+    environment:
+      - TZ=America/New_York
+
+    volumes:
+      # config.yaml and the SQLite database of what has been seen and done.
+      - ./config:/config
+
+      # Scratch space for in-progress encodes.
+      #
+      # Worth knowing: this only gets used when a file created in it can be
+      # renamed into the media directory, and a separate bind mount never
+      # can -- rename(2) refuses to cross a mount point even when both sides
+      # are the same disk. So in this layout the temp file goes beside the
+      # file being replaced instead, which is safe and is what the startup
+      # note is telling you. To actually use fast scratch space, point
+      # paths.work_dir at a directory *inside* one of the media mounts below.
+      - ./temp:/temp
+
+      # The media, read-write, at whatever paths config.yaml names. This tool
+      # replaces files in place and never moves one between directories, so
+      # these mounts are the whole of what it can reach.
+      - /mnt/user/media_video:/mnt/media_video
+      - /mnt/user/media_isolated:/mnt/media_isolated

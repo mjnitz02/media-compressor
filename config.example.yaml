@@ -217,9 +217,20 @@ scanner:
   interval_minutes: 180
 
 paths:
-  # Scratch space for in-progress encodes. Should be fast and, ideally, on the
-  # same filesystem as the media so the final rename is atomic. When it is
-  # not, the tool falls back to a same-directory temp file automatically.
+  # Scratch space for in-progress encodes.
+  #
+  # It is only used when a file created in it can be rename()d into the media
+  # directory, because the last step of a replace is that rename and a rename
+  # is what makes the swap atomic. That is a stricter condition than "the same
+  # disk": rename(2) refuses to cross a *mount point* even when both sides are
+  # one filesystem, so in a container a /temp mounted separately from the
+  # media never qualifies, however fast it is.
+  #
+  # `run` and `daemon` test it at startup by doing it, and say so in the log
+  # when the answer is no. Then the temp file goes beside the file being
+  # replaced instead, which is safe and costs nothing but the write landing on
+  # the same disk as the media. To actually use fast scratch space, point this
+  # at a directory *inside* one of the library paths below.
   work_dir: /temp
   # What has been seen, what was decided about it, and what was done. Config
   # in YAML, state in SQLite, and the two never mix - reading the old Tdarr

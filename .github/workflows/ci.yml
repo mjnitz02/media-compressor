@@ -1,0 +1,81 @@
+# Every push and pull request: the tests, and the image that ships them.
+#
+# The image is built here as well as on a tag because a broken Dockerfile
+# found at release time is found at the worst possible moment.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # The encoder's and runner's tests work on clips they generate with
+      # testsrc, so without ffmpeg they quietly skip themselves and the
+      # interesting half of the suite does not run.
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
+          ffmpeg -version | head -1
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "these files need gofmt:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      # -race because the runner is two worker pools and a daemon watching
+      # them through a callback, which is where a data race would live.
+      - name: go test
+        run: go test -race ./...
+
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build the image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: false
+          build-args: |
+            VERSION=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          load: true
+          tags: media-compressor:ci
+
+      # Proves the three things the image exists to provide: the binary runs,
+      # ffmpeg is on PATH, and it is one that can talk to an Intel GPU.
+      - name: Check what is in it
+        run: |
+          docker run --rm media-compressor:ci version
+          docker run --rm --entrypoint ffprobe media-compressor:ci -version | head -1
+          docker run --rm --entrypoint ffmpeg media-compressor:ci -hide_banner -encoders \
+            | grep -E 'hevc_vaapi|hevc_qsv'
+          docker image ls media-compressor:ci --format 'image size: {{.Size}}'

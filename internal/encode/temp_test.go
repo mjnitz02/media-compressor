@@ -1,6 +1,7 @@
 package encode
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -97,5 +98,62 @@ func TestTempNameKeepsLongUnicodeNamesValid(t *testing.T) {
 		if r == '�' {
 			t.Error("truncation split a multi-byte character")
 		}
+	}
+}
+
+// The device-number comparison above is a prediction, and CanRenameInto is
+// the same question asked by doing it. This is the case where they agree.
+func TestCanRenameIntoASiblingDirectory(t *testing.T) {
+	root := t.TempDir()
+	work := filepath.Join(root, "work")
+	media := filepath.Join(root, "media")
+	for _, d := range []string{work, media} {
+		if err := os.Mkdir(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := CanRenameInto(work, media); err != nil {
+		t.Fatalf("two directories in one temp dir should be renameable between: %v", err)
+	}
+
+	// The probe writes into a media directory, so the one thing it must never
+	// do is leave anything in one.
+	for _, d := range []string{work, media} {
+		entries, err := os.ReadDir(d)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(entries) != 0 {
+			t.Errorf("%s still holds %d entries after the probe; the first is %s",
+				d, len(entries), entries[0].Name())
+		}
+	}
+}
+
+// A work dir that is not there cannot be probed, and saying so is what makes
+// the caller fall back to a temp file beside the source.
+func TestCanRenameIntoReportsAnUnusableWorkDir(t *testing.T) {
+	media := t.TempDir()
+	err := CanRenameInto(filepath.Join(t.TempDir(), "does-not-exist"), media)
+	if err == nil {
+		t.Fatal("a work dir that does not exist should not report itself usable")
+	}
+	if entries, _ := os.ReadDir(media); len(entries) != 0 {
+		t.Errorf("a failed probe left %d entries in the media directory", len(entries))
+	}
+}
+
+// The destination refusing the rename is the container case: /temp and the
+// media as two bind mounts of one filesystem, which report the same st_dev
+// and still fail EXDEV. A missing destination stands in for it here, since a
+// unit test cannot make a mount.
+func TestCanRenameIntoReportsADestinationThatRefuses(t *testing.T) {
+	work := t.TempDir()
+	if err := CanRenameInto(work, filepath.Join(t.TempDir(), "does-not-exist")); err == nil {
+		t.Fatal("a destination that cannot be renamed into should not report itself usable")
+	}
+	if entries, _ := os.ReadDir(work); len(entries) != 0 {
+		t.Errorf("a failed probe left %d entries in the work dir", len(entries))
 	}
 }

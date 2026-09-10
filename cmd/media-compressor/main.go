@@ -1,8 +1,8 @@
 // Command media-compressor keeps a media library encoded as HEVC with
 // unwanted tracks removed.
 //
-// `validate`, `plan`, `scan`, `run`, `status`, `daemon` and `serve` exist.
-// The container is a later phase; see docs/plan.md.
+// `validate`, `plan`, `scan`, `run`, `status`, `daemon` and `serve` exist,
+// and it ships as a container carrying its own ffmpeg; see docs/plan.md.
 package main
 
 import (
