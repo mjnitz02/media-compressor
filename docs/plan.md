@@ -151,19 +151,85 @@ Found by making the corpus pass, and each now covered by a test:
    picker shows something better than "Unknown". Note that enabling this makes
    otherwise-untouched files need one cheap, lossless remux pass.
 
-## Phase 2 — Config
+## Phase 2 — Config ✅ done
 
-- `internal/config` — parse `config.yaml`, resolve `extends`, apply
-  `defaults`, validate paths exist and profiles resolve.
-- Fail loudly and specifically at startup. A typo'd profile name must be a
-  startup error, never a silent fallback to different encode settings.
-- `mediacompressor validate` subcommand.
+`internal/config` parses `config.yaml`, resolves `extends`, applies defaults
+and validates the result, and `media-compressor validate` prints what each
+library will actually get. 98.3% covered.
+
+**Definition of done: met.** The binding test is
+`TestExampleConfigReproducesTheBuiltinProfiles`: the `standard` and `anime`
+profiles in `config.example.yaml` must parse into exactly `decide.Standard()`
+and `decide.Anime()`, which are the profiles the golden corpus was verified
+against. The file an operator starts from therefore cannot drift away from the
+behaviour that was measured, and if someone changes one, the test says which
+field and by how much.
+
+### How `extends` merges
+
+A child profile is built by decoding the parent's YAML into a struct and then
+decoding the child's YAML into that same struct. yaml.v3 only writes the fields
+a document actually mentions, so a child overrides exactly what it names and
+inherits everything else — including sibling fields inside a block it partly
+overrides.
+
+Lists replace rather than append. `keep_languages: [eng]` in a child means
+"only English"; if it appended, a profile could never narrow anything.
+
+### Container precedence
+
+Library, then profile, then `defaults`. All three are checked, and the library
+override is applied to a copy so that two libraries sharing a profile cannot
+affect each other.
+
+### What is deliberately not configurable
+
+- **`Quirks`.** They are bug-for-bug switches for the stack being replaced, so
+  enabling one in production would mean asking for a known bug. Every parsed
+  profile gets the corrected values; `quirks:` in a config file is an unknown
+  field and therefore an error.
+- **`KeepAllLanguages`**, part of the same compatibility shim.
+- **`-bufsize`**, which is always the source bitrate. The draft schema had a
+  `bufsize_basis` key with exactly one legal value; a knob that can only be in
+  one position is noise, so it was removed rather than implemented.
+
+`leave_alone` went the other way — it was missing from the draft schema and is
+now explicit, because "which codecs are never re-encoded" is a real quality
+lever and AV1 being in that list is one of the four corrected bugs.
+
+### Validation, and the question it asks
+
+Every check earns its place by answering: *if this were wrong, when would you
+find out?* A misspelled profile name fails at startup, which is fine. These do
+not fail at all on their own:
+
+| Check | What it prevents |
+|---|---|
+| `floor_kbps` must be written down, even as `0` | A forgotten key defaulting to no floor sends several thousand files into an encode the old stack declined |
+| Bitrate tiers ordered highest-first, ending at `above: 0` | The engine takes the first tier a bitrate reaches, so a mis-ordered table silently applies the wrong divisor |
+| `leave_alone` contains the target codec | Otherwise every converted file is a candidate again on the next scan, forever |
+| Language codes look like language codes | `englsh` does not error, it just stops matching — and you find out months later when a film has no English audio |
+| `primary_languages` ⊆ `keep_languages` | A profile that names a language as the one the library is built around while also dropping it |
+| No two library paths overlap | One file with two profiles, resolved by scan order |
+| Divisor ≥ 1 | A divisor below 1 raises the bitrate above the source |
+
+All problems are reported together. The operator opens this file about twice a
+year; fixing it one error per run is miserable.
+
+Path existence is checked separately (`CheckPaths`, and
+`validate -check-paths=false`) so that a server's config can be validated from a
+laptop where none of the mounts exist. Parsing itself touches no filesystem.
+
+**Known gap for Phase 4:** `ignore_globs` are only checked for syntax here.
+`path/filepath.Match` does not understand `**`, so the pattern
+`**/.Recycle.Bin/**` in the example config will not match nested paths with the
+standard library alone. The scanner has to implement that matching itself.
 
 ### The container toggle
 
-`container` is one of `mkv`, `mp4`, or `source`, set per profile and
-overridable per library. It is implemented in `decide` already; Phase 2 is
-about exposing it.
+`container` is one of `mkv`, `mp4`, or `source`, set in `defaults`, overridable
+per profile, and overridable again per library. `decide` implements it and the
+config exposes it.
 
 The point of the setting is **not** to convert libraries into MP4. It is to be
 able to say "don't force a container change." A library holding a mix of MKV

@@ -25,15 +25,16 @@ container and a plugin runtime to issue roughly one ffmpeg command per week.
 
 ## Status
 
-**Phase 1 complete.** The decision engine is written and green against the
-golden corpus.
+**Phases 1 and 2 complete.** The decision engine is written and green against
+the golden corpus, and it can be driven from a YAML file.
 
 | Package | What it does | Coverage |
 |---|---|---|
 | `internal/probe` | ffprobe types and the one function that runs it | 94.7% |
-| `internal/decide` | every quality decision, no I/O at all | 96.6% |
+| `internal/decide` | every quality decision, no I/O at all | 96.3% |
+| `internal/config` | YAML to profiles and libraries, and the checks on it | 98.3% |
 
-`go test ./...` runs 74 tests. The headline one is `TestGoldenCorpus`, which
+`go test ./...` runs 146 tests. The headline one is `TestGoldenCorpus`, which
 replays all **1,881** real decisions recorded from the Tdarr install this
 replaces and asserts three things per file: the same video decision, the same
 bitrate arithmetic to the kbps, and the **same ffmpeg arguments token for
@@ -44,8 +45,32 @@ between bug-for-bug compatibility and the corrected defaults: 40 files stop
 being encode candidates (28 AV1, 12 with PNG cover art), 52 keep more
 subtitles, **0 lose an audio track, and 0 are newly re-encoded.**
 
-Still to build: config parsing, the encode-and-replace step, the scanner and
-queue, the web UI, and the container. See [docs/plan.md](docs/plan.md).
+`TestExampleConfigReproducesTheBuiltinProfiles` ties the two phases together:
+the `standard` and `anime` profiles in `config.example.yaml` must parse into
+exactly the profiles the corpus was verified against, so the file an operator
+starts from cannot drift away from the behaviour that was measured.
+
+```
+$ media-compressor validate -check-paths=false
+config.yaml parsed cleanly.
+
+libraries
+  movies     profile standard   container mkv     notifies plex
+               /mnt/media_video/movies
+  ...
+
+profiles
+  standard
+    video      hevc via hevc_vaapi, leaving hevc/av1 alone
+    bitrate    container basis; 10000+ /2, 6000+ /1.75, 3000+ /1.5, 0+ /1; 0.7x-1.3x; skip below 3000 kbps
+    audio      keep eng,und,jpn,kor,fra,fre + untagged; 6+ channels to ac3; tag untagged as eng
+               trust tags only when eng present; drop titles matching commentary,description,sdh
+    subtitles  keep eng,und,jpn,kor + untagged; forced always kept; tag untagged as eng
+    strip      data streams, cover art
+```
+
+Still to build: the encode-and-replace step, the scanner and queue, the web UI,
+and the container. See [docs/plan.md](docs/plan.md).
 
 Requires Go 1.27+ and, for the tests that generate clips, ffmpeg.
 
@@ -57,7 +82,7 @@ Requires Go 1.27+ and, for the tests that generate clips, ffmpeg.
 | [docs/libraries.md](docs/libraries.md) | The real-world library layout and the constraints it imposes |
 | [docs/plan.md](docs/plan.md) | Phased build plan |
 | [testdata/README.md](testdata/README.md) | The golden decision corpus and how it was made |
-| [config.example.yaml](config.example.yaml) | Draft configuration schema |
+| [config.example.yaml](config.example.yaml) | The configuration schema, and a working config to start from |
 
 ## Safety rules
 
