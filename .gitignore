@@ -1,0 +1,61 @@
+# --- Go ---------------------------------------------------------------
+# Compiled binaries. The build produces one static binary at the repo root
+# named after the module; catch that plus the conventional Go extensions.
+/media-compressor
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test and coverage output (`go test -c`, `go test -coverprofile`).
+*.test
+*.out
+coverage.txt
+coverage.html
+
+# Go workspace files are per-developer, not per-repo.
+go.work
+go.work.sum
+
+# Dependency vendoring is off by default; ignore it unless deliberately added.
+/vendor/
+
+# --- Claude / agent tooling -------------------------------------------
+CLAUDE.md
+CLAUDE.local.md
+.claude/
+.claudeignore
+AGENTS.md
+.cursor/
+.aider*
+
+# --- Runtime state and local config -----------------------------------
+# Config in YAML, state in SQLite — neither belongs in git. Only
+# config.example.yaml is tracked.
+config.yaml
+config.yml
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+/config/
+/temp/
+/data/
+
+# --- Media -------------------------------------------------------------
+# Tests use generated clips (testsrc); real media must never be committed.
+*.mkv
+*.mp4
+*.m4v
+*.avi
+*.mov
+*.ts
+*.webm
+
+# --- Editors and OS ----------------------------------------------------
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~

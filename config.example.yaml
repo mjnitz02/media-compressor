@@ -1,0 +1,205 @@
+# media-compressor configuration
+#
+# Two concepts, deliberately separate:
+#   profiles  - what work to do (defined once, reused everywhere)
+#   libraries - where to do it (a name, a profile, and some paths)
+#
+# Everything about an encode should be readable from this file alone.
+
+defaults:
+  profile: standard
+  # Applies to every library unless overridden.
+  #
+  #   mkv     always Matroska, which is what the old Tdarr stack did. The
+  #           right choice for the main Plex libraries.
+  #   source  keep whatever container the file already has, even when the file
+  #           is being re-encoded. The setting for a library holding a mix of
+  #           MKV and MP4, and for anything not under Plex streaming where
+  #           standardising on MKV buys nothing. Only exception: containers
+  #           this tool does not write (avi, wmv, vob) still land in mkv.
+  #   mp4     always MP4. Rarely what you want - it renames every MKV in the
+  #           library and drops image-based subtitles outright.
+  #
+  # Keeping a container forces nothing. A stream already muxed into a
+  # container is proof it fits, so a file that keeps its own container never
+  # loses a stream and never has a codec change forced on it. Only *forcing*
+  # a container can cost you anything.
+  #
+  # And forcing one changes the extension, which is the only rename this tool
+  # will ever do: same directory, same base name. Be deliberate about it per
+  # library - an identical filename is what makes replacement invisible to
+  # Plex mid-playback, and the *arr stacks track files by path.
+  container: mkv
+  # Concurrency is split because the two kinds of work contend for
+  # different resources: remuxes are I/O bound, encodes are GPU bound.
+  workers:
+    remux: 3
+    encode: 1
+
+profiles:
+
+  standard:
+    video:
+      target_codec: hevc
+      encoder: hevc_vaapi           # hevc_vaapi | hevc_qsv | libx265
+      device: /dev/dri/renderD128
+
+      # How a source's bitrate is derived. 'container' divides total file
+      # size by duration, which over-allocates because it charges audio and
+      # subtitle bytes to the video budget. It is wrong, and it is what the
+      # Tdarr stack did, so it is the default for bug-for-bug parity.
+      # See docs/tdarr-analysis.md.
+      source_bitrate_basis: container   # container | video_stream
+
+      bitrate:
+        # First matching tier wins. `above` is the source bitrate in kbps.
+        tiers:
+          - { above: 10000, divisor: 2.0 }
+          - { above: 6000,  divisor: 1.75 }
+          - { above: 3000,  divisor: 1.5 }
+          - { above: 0,     divisor: 1.0 }
+        min_multiplier: 0.7           # -minrate
+        max_multiplier: 1.3           # -maxrate
+        bufsize_basis: source         # -bufsize = the source bitrate
+
+        # Skip the encode entirely if the computed target lands below this.
+        # This is the single most important quality control in the system:
+        # it is why the old stack never produced a bad-looking file.
+        floor_kbps: 3000
+
+    audio:
+      # Streams with >= 6 channels are converted; stereo and mono are copied.
+      multichannel_to: ac3
+      multichannel_threshold: 6
+      drop_titles_matching: [commentary, description, sdh]
+      keep_languages: [eng, und, jpn, kor, fra, fre]
+      keep_untagged: true
+
+      # The languages this library would actually be expected to contain. If a
+      # file has no audio track in any of them, its language tags are treated
+      # as untrustworthy and NOTHING is dropped for its language.
+      #
+      # This is the "when in doubt, keep it" rule made mechanical. A release
+      # turning up with only a Korean track is far more likely to be mistagged
+      # than to genuinely contain nothing wanted.
+      primary_languages: [eng]
+
+      # Write a language tag onto tracks that have none, so a player's track
+      # picker shows something better than "Unknown".
+      #
+      # Worth knowing: this makes otherwise-untouched files need a remux, so
+      # turning it on means one cheap, lossless pass over the library. It
+      # never re-encodes anything. Set to "" to disable.
+      tag_untagged_as: eng
+
+      # Regardless of every rule above, the last audio track in a file is
+      # never dropped. A track in a language nobody asked for beats a silent
+      # video, and two files in the golden corpus are exactly that shape.
+      # Not configurable on purpose.
+
+    subtitles:
+      keep_languages: [eng, und, jpn, kor]
+      keep_untagged: true
+      drop_titles_matching: [commentary, description, sdh]
+      drop_codecs: [eia_608]
+      primary_languages: [eng]
+      tag_untagged_as: eng
+
+      # Keep a forced track whatever its language. Forced subtitles are the
+      # translated-signage track for a film watched in its original audio, so
+      # losing one is very visible.
+      keep_forced: true
+
+    strip:
+      data_streams: true
+      # Embedded artwork: posters, thumbnails, fanart. Detected by disposition
+      # and by still-image codec, not just mjpeg - the old stack checked only
+      # mjpeg and consequently treated PNG posters as video to be encoded.
+      cover_art: true
+      chapters: false
+
+  # Same recipe, but biased toward keeping tracks. Anime language tags are
+  # frequently wrong (English tagged jpn and vice versa), so dropping on the
+  # basis of a tag is risky. See docs/libraries.md.
+  anime:
+    extends: standard
+    audio:
+      keep_languages: [eng, und, jpn, kor]
+      keep_untagged: true
+      # Either an English or a Japanese track is enough to believe the tags on
+      # an anime release. A file with neither is left entirely alone.
+      primary_languages: [eng, jpn]
+      # Untagged anime audio is far more often Japanese than not.
+      tag_untagged_as: jpn
+    subtitles:
+      # Soft subs are the norm and usually wanted; only commentary goes. SDH
+      # is kept, unlike `standard`, because on an anime release it is
+      # frequently the only English subtitle track present.
+      keep_languages: [eng, und, jpn, kor]
+      keep_untagged: true
+      drop_titles_matching: [commentary, description]
+      primary_languages: [eng, jpn]
+      tag_untagged_as: eng
+
+libraries:
+
+  - name: movies
+    paths:
+      - /mnt/media_video/movies
+
+  - name: tv
+    paths:
+      - /mnt/media_video/tv
+      - /mnt/media_video/tv_animated
+      - /mnt/media_video/tv_kids
+
+  - name: anime
+    profile: anime
+    paths:
+      - /mnt/media_video/anime
+
+  # A library holding a mix of MKV and MP4, not under Plex streaming. Files
+  # here still get re-encoded when the bitrate says it is worth it; they just
+  # stay in whichever container they already have instead of being renamed.
+  - name: mixed
+    profile: standard
+    container: source
+    paths:
+      - /mnt/media_video/mixed
+
+  # Content held outside the Plex-scanned roots on purpose. Same encoding
+  # treatment, no Plex notification. NEVER relocated - the path is the
+  # safeguard. See docs/libraries.md.
+  - name: isolated
+    profile: standard
+    notify_plex: false
+    paths:
+      - /mnt/media_isolated/movies
+      - /mnt/media_isolated/tv
+      - /mnt/media_isolated/anime
+
+scanner:
+  # Extensions considered candidates. Output is always `container` above.
+  extensions: [mkv, mp4, mov, m4v, mpg, mpeg, avi, flv, webm, wmv, vob, m2ts, ts]
+  ignore_globs:
+    - "**/.Recycle.Bin/**"
+    - "**/@eaDir/**"
+    - "**/*.partial.*"
+  # Leave freshly-written files alone until they have settled. On a server
+  # with this many moving parts a file can land, then shift between shares, or
+  # appear as a temp file while the real one is still downloading.
+  #
+  # Age alone is not sufficient, so a file is only eligible once it is this
+  # old AND its size has not changed since the previous scan.
+  min_age_seconds: 3600
+  interval_minutes: 180
+
+paths:
+  # Scratch space for in-progress encodes. Should be fast and, ideally, on the
+  # same filesystem as the media so the final rename is atomic. When it is
+  # not, the tool falls back to a same-directory temp file automatically.
+  work_dir: /temp
+  database: /config/media-compressor.db
+
+server:
+  listen: ":8080"

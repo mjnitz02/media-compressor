@@ -1,0 +1,96 @@
+# media-compressor
+
+A small, self-contained Docker service that keeps a media library encoded as
+HEVC in MKV, with unwanted audio and subtitle tracks removed.
+
+It exists to replace a Tdarr install that did this job well but cost ~2GB of
+container and a plugin runtime to issue roughly one ffmpeg command per week.
+
+**Design goals, in priority order:**
+
+0. **Doing nothing is a valid result.** This is an optimiser; it acting on any
+   given file is never a given. Already HEVC, bitrate too low to cut, an
+   unrecognised track, any risk of losing something that mattered — all of
+   those mean leave the file alone. The cost of declining is a few gigabytes;
+   the cost of over-compressing or pruning wrongly is an unwatchable file and
+   no source to go back to.
+1. **Never lose or misplace a file.** See "Safety rules" below. This is the
+   only truly hard requirement.
+2. **Legible decisions.** You should be able to read a YAML file and know
+   exactly what will happen to a library, and run `--dry-run` to see it.
+3. **Many folders, one profile.** Encoding rules are defined once and pointed
+   at any number of paths.
+4. **Small.** One static Go binary plus ffmpeg. No plugin runtime, no node
+   protocol, no frontend build step.
+
+## Status
+
+**Phase 1 complete.** The decision engine is written and green against the
+golden corpus.
+
+| Package | What it does | Coverage |
+|---|---|---|
+| `internal/probe` | ffprobe types and the one function that runs it | 94.7% |
+| `internal/decide` | every quality decision, no I/O at all | 96.6% |
+
+`go test ./...` runs 74 tests. The headline one is `TestGoldenCorpus`, which
+replays all **1,881** real decisions recorded from the Tdarr install this
+replaces and asserts three things per file: the same video decision, the same
+bitrate arithmetic to the kbps, and the **same ffmpeg arguments token for
+token** on all 1,877 fixtures that recorded a command.
+
+`TestStandardDivergesFromTdarrOnlyWhereIntended` then pins the difference
+between bug-for-bug compatibility and the corrected defaults: 40 files stop
+being encode candidates (28 AV1, 12 with PNG cover art), 52 keep more
+subtitles, **0 lose an audio track, and 0 are newly re-encoded.**
+
+Still to build: config parsing, the encode-and-replace step, the scanner and
+queue, the web UI, and the container. See [docs/plan.md](docs/plan.md).
+
+Requires Go 1.27+ and, for the tests that generate clips, ffmpeg.
+
+## Documentation
+
+| Doc | What's in it |
+|---|---|
+| [docs/tdarr-analysis.md](docs/tdarr-analysis.md) | Forensics on the Tdarr stack being replaced, and why its output looks good |
+| [docs/libraries.md](docs/libraries.md) | The real-world library layout and the constraints it imposes |
+| [docs/plan.md](docs/plan.md) | Phased build plan |
+| [testdata/README.md](testdata/README.md) | The golden decision corpus and how it was made |
+| [config.example.yaml](config.example.yaml) | Draft configuration schema |
+
+## Safety rules
+
+These are non-negotiable and every phase must preserve them.
+
+1. **Files are replaced in place, never moved between directories.** Folder
+   location carries meaning in this library (see docs/libraries.md) and the
+   tool must never reorganise anything.
+
+   The one permitted rename is the extension, and only when a profile *forces*
+   a different container: same directory, same base name, new extension. Be
+   deliberate about that per library — an identical filename is what lets Plex
+   swap a file underneath a running playback, and the \*arr stacks track files
+   by path. `--dry-run` reports every file whose extension would change.
+
+   `container: source` never renames: a file keeps the container it already
+   has even when it is being re-encoded.
+8. **Keeping a container forces nothing.** A stream already muxed into a
+   container is proof it fits there, so a file that keeps its own container
+   never loses a stream and never has a codec change forced on it. Only
+   forcing a container can cost anything.
+2. **Encode to a temp path on the same filesystem**, then `rename()` over the
+   original so the swap is atomic.
+3. **Verify before replacing:** output must ffprobe cleanly, its duration must
+   be within ~1s of the source, expected streams must be present, and the file
+   must not be implausibly small.
+4. **The source is deleted only after a verified successful replace.**
+5. **`--dry-run` is a first-class mode**, not a debug flag. It prints the full
+   plan and touches nothing.
+6. **Never leave a file with no audio.** Track selection rules yield to this
+   unconditionally: a track in a language nobody asked for beats a silent
+   video. When a safety rule overrides the configuration this way, the plan
+   records a note saying so rather than doing it quietly.
+7. **Only act on language tags that look credible.** If a file has no track in
+   any language the library would be expected to contain, its tags are treated
+   as unreliable and nothing is pruned on them.
