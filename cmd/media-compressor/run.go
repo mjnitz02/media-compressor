@@ -5,9 +5,11 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
@@ -15,31 +17,42 @@ import (
 	"github.com/mjnitz02/media-compressor/internal/decide"
 	"github.com/mjnitz02/media-compressor/internal/encode"
 	"github.com/mjnitz02/media-compressor/internal/probe"
+	"github.com/mjnitz02/media-compressor/internal/queue"
+	"github.com/mjnitz02/media-compressor/internal/runner"
 	"github.com/mjnitz02/media-compressor/internal/scan"
+	"github.com/mjnitz02/media-compressor/internal/store"
 )
 
-// runRun implements both `run` and `plan`. They are the same code path with
-// dryRun defaulting differently, which is the point: --dry-run is not a
-// simulation of the real thing, it is the real thing stopped one step short.
-// What it prints is the Job the encoder would have been handed.
-func runRun(args []string, dryRun bool) error {
-	name := "run"
-	if dryRun {
-		name = "plan"
-	}
-	fs := flag.NewFlagSet(name, flag.ExitOnError)
+// runPass implements plan, scan and run. They are one code path with the mode
+// as a parameter, which is the point: --dry-run is not a simulation of the
+// real thing, it is the real thing stopped one step short. What plan prints is
+// the Job the encoder would have been handed.
+func runPass(args []string, mode runner.Mode) error {
+	fs := flag.NewFlagSet(string(mode), flag.ExitOnError)
 	cfgPath := fs.String("config", defaultConfigPath(), "path to config.yaml")
-	library := fs.String("library", "", "run over every path in this library from the config")
+	library := fs.String("library", "", "work over every path in this library from the config")
 	profileName := fs.String("profile", "", "force this profile instead of the one the library implies")
 	limit := fs.Int("limit", 0, "stop after this many files that need work (0 = no limit)")
-	verbose := fs.Bool("v", false, "list every declined file, and print the ffmpeg command for each job")
+	verbose := fs.Bool("v", false, "list every declined and waiting file, and print the ffmpeg command for each job")
 	ffmpegBin := fs.String("ffmpeg", encode.DefaultBinary, "ffmpeg binary")
 	ffprobeBin := fs.String("ffprobe", probe.DefaultBinary, "ffprobe binary")
-	if !dryRun {
+	unsettled := fs.Bool("unsettled", false,
+		"act on files that have not yet been seen unchanged by a second scan")
+
+	var retryFailed *bool
+	if mode != runner.ModePlan {
+		retryFailed = fs.Bool("retry-failed", false,
+			"try files again that a previous run gave up on")
+	}
+	dryRun := mode == runner.ModePlan
+	if mode == runner.ModeRun {
 		fs.BoolVar(&dryRun, "dry-run", false, "print the full plan and touch nothing")
 	}
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if dryRun {
+		mode = runner.ModePlan
 	}
 
 	cfg, err := config.Load(*cfgPath)
@@ -52,27 +65,32 @@ func runRun(args []string, dryRun bool) error {
 		return err
 	}
 
-	// Ctrl-C stops after the file in flight rather than mid-encode, and the
+	db, err := openStore(cfg, mode)
+	if err != nil {
+		return err
+	}
+	if db != nil {
+		defer db.Close()
+	}
+
+	// Ctrl-C stops after the files in flight rather than mid-encode, and the
 	// encoder deletes its temp file on cancellation. A second one is the
 	// process default and kills it outright.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	prober := probe.Prober{Binary: *ffprobeBin}
-	encoder := encode.Encoder{
-		Binary:  *ffmpegBin,
-		Prober:  prober,
-		WorkDir: cfg.Paths.WorkDir,
+	opts := runner.Options{
+		Mode:             mode,
+		Limit:            *limit,
+		Workers:          queue.Workers{Remux: cfg.Defaults.Workers.Remux, Encode: cfg.Defaults.Workers.Encode},
+		ProbeWorkers:     cfg.Defaults.Workers.Remux,
+		IncludeUnsettled: *unsettled,
+		RetryFailed:      retryFailed != nil && *retryFailed,
 	}
 
 	failed := 0
 	for _, t := range targets {
-		n, err := runTarget(ctx, cfg, t, encoder, prober, options{
-			dryRun:  dryRun,
-			verbose: *verbose,
-			limit:   *limit,
-			ffmpeg:  *ffmpegBin,
-		})
+		n, err := runOneTarget(ctx, cfg, db, t, opts, *ffmpegBin, *ffprobeBin, *verbose)
 		if err != nil {
 			return err
 		}
@@ -85,26 +103,124 @@ func runRun(args []string, dryRun bool) error {
 	return nil
 }
 
-type options struct {
-	dryRun  bool
-	verbose bool
-	limit   int
-	ffmpeg  string
+// openStore opens the state database.
+//
+// A dry run opens it read-only in spirit -- it reads sightings and cached
+// decisions but writes nothing -- and will not create the file if it does not
+// exist yet. Printing a plan should not leave anything behind.
+func openStore(cfg *config.Config, mode runner.Mode) (*store.Store, error) {
+	path := cfg.Paths.Database
+	if mode == runner.ModePlan {
+		if _, err := os.Stat(path); err != nil {
+			return nil, nil
+		}
+	}
+	if dir := filepath.Dir(path); dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return nil, fmt.Errorf("database directory: %w", err)
+		}
+	}
+	db, err := store.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	if mode == runner.ModeRun {
+		// A job still marked running belongs to a process that died. Nothing
+		// was replaced -- that only happens after verification -- so the row
+		// is merely untidy, and leaving it would make the history lie.
+		if n, err := db.AbandonRunningJobs(context.Background(), time.Now()); err != nil {
+			db.Close()
+			return nil, err
+		} else if n > 0 {
+			fmt.Fprintf(os.Stderr, "note: %d %s left running by a previous process, closed off\n",
+				n, plural(n, "job was", "jobs were"))
+		}
+	}
+	return db, nil
 }
 
-// target is one set of paths and the profile that governs them.
-type target struct {
-	label   string
-	roots   []string
-	profile decide.Profile
-	lib     *config.Library
+// newRunner assembles the collaborators for one config.
+func newRunner(cfg *config.Config, db *store.Store, ffmpegBin, ffprobeBin string) *runner.Runner {
+	prober := probe.Prober{Binary: ffprobeBin}
+	return &runner.Runner{
+		Store:  db,
+		Prober: prober,
+		Encoder: encode.Encoder{
+			Binary:  ffmpegBin,
+			Prober:  prober,
+			WorkDir: cfg.Paths.WorkDir,
+		},
+		Scan: scan.Options{
+			Extensions:  cfg.Scanner.Extensions,
+			IgnoreGlobs: cfg.Scanner.IgnoreGlobs,
+			MinAge:      time.Duration(cfg.Scanner.MinAgeSeconds) * time.Second,
+		},
+	}
+}
+
+// runOneTarget runs one pass and prints it, returning the number of files that
+// failed outright.
+//
+// "Failed" is narrower than "was not processed". A file this tool declines --
+// a symlink it will not replace in place, a plan decide could not make -- is
+// reported and moves on, because declining is a valid result and a library
+// with one odd file in it should not make every run exit non-zero. Only a
+// file that could not be read, or work that went wrong, counts.
+func runOneTarget(ctx context.Context, cfg *config.Config, db *store.Store, t runner.Target,
+	opts runner.Options, ffmpegBin, ffprobeBin string, verbose bool) (int, error) {
+
+	// Sweeping forgets files that are no longer on disk, which is only a
+	// correct conclusion when whole libraries were walked. A pass over paths
+	// somebody named would otherwise decide the rest of the library had
+	// vanished.
+	opts.Sweep = !t.Named
+
+	r := newRunner(cfg, db, ffmpegBin, ffprobeBin)
+	live := newLiveOutput(os.Stdout, verbose)
+	r.OnEvent = live.handle
+
+	header := t.Label
+	if opts.Mode == runner.ModePlan {
+		header = "dry run: " + t.Label
+	}
+
+	sum, err := r.Pass(ctx, t, opts)
+	live.finish()
+	if err != nil {
+		return 0, err
+	}
+
+	for _, werr := range sum.WalkErrors {
+		fmt.Fprintf(os.Stderr, "warning: %v\n", werr)
+	}
+
+	rep := &report{title: header, verbose: verbose, binary: ffmpegBin}
+	if len(t.Roots) == 1 {
+		rep.root = t.Roots[0]
+	}
+	rep.addSummary(sum)
+	rep.print(os.Stdout, opts.Mode == runner.ModePlan)
+
+	if sum.StoppedAtLimit {
+		fmt.Fprintf(os.Stdout, "\nstopped at -limit %d; the rest of the library was left for the next run.\n", opts.Limit)
+	}
+	if sum.Cancelled {
+		fmt.Fprintf(os.Stdout, "\nstopped early: %v\n", ctx.Err())
+	}
+	switch opts.Mode {
+	case runner.ModePlan:
+		fmt.Fprintf(os.Stdout, "\nnothing was written. Re-run the same command as `run` to carry this out.\n")
+	case runner.ModeScan:
+		fmt.Fprintf(os.Stdout, "\nno media was touched; what was found has been recorded. Run `run` to carry it out.\n")
+	}
+	return sum.Failures(), nil
 }
 
 // resolveTargets works out what to operate on and, crucially, under which
 // profile. A path that belongs to no library and has no -profile is an error
 // rather than a guess: silently encoding a folder with the wrong quality
 // target is the failure this whole config package exists to prevent.
-func resolveTargets(cfg *config.Config, library, profileName string, paths []string) ([]target, error) {
+func resolveTargets(cfg *config.Config, library, profileName string, paths []string) ([]runner.Target, error) {
 	if library != "" && len(paths) > 0 {
 		return nil, errors.New("give either -library or some paths, not both")
 	}
@@ -123,11 +239,11 @@ func resolveTargets(cfg *config.Config, library, profileName string, paths []str
 				}
 				prof = p
 			}
-			return []target{{
-				label:   fmt.Sprintf("library %s (profile %s, container %s)", lib.Name, prof.Name, prof.Container),
-				roots:   lib.Paths,
-				profile: prof,
-				lib:     lib,
+			return []runner.Target{{
+				Label:   fmt.Sprintf("library %s (profile %s, container %s)", lib.Name, prof.Name, prof.Container),
+				Library: lib.Name,
+				Roots:   lib.Paths,
+				Profile: prof,
 			}}, nil
 		}
 		return nil, fmt.Errorf("library %q is not defined in the config", library)
@@ -137,7 +253,7 @@ func resolveTargets(cfg *config.Config, library, profileName string, paths []str
 		return nil, errors.New("nothing to do: pass -library NAME, or one or more paths")
 	}
 
-	var targets []target
+	var targets []runner.Target
 	for _, p := range paths {
 		abs, err := filepath.Abs(p)
 		if err != nil {
@@ -148,7 +264,7 @@ func resolveTargets(cfg *config.Config, library, profileName string, paths []str
 		}
 
 		var prof decide.Profile
-		var lib *config.Library
+		var libName string
 		switch {
 		case profileName != "":
 			p, ok := cfg.Profiles[profileName]
@@ -162,138 +278,119 @@ func resolveTargets(cfg *config.Config, library, profileName string, paths []str
 				return nil, fmt.Errorf("%s is not inside any configured library, so there is no profile for it; "+
 					"pass -profile NAME to say which rules to apply", abs)
 			}
-			lib, prof = l, l.Profile
+			libName, prof = l.Name, l.Profile
 		}
 
 		label := fmt.Sprintf("%s (profile %s, container %s)", abs, prof.Name, prof.Container)
-		if lib != nil {
-			label = fmt.Sprintf("%s (library %s, profile %s, container %s)", abs, lib.Name, prof.Name, prof.Container)
+		if libName != "" {
+			label = fmt.Sprintf("%s (library %s, profile %s, container %s)", abs, libName, prof.Name, prof.Container)
 		}
-		targets = append(targets, target{label: label, roots: []string{abs}, profile: prof, lib: lib})
+		// Named: somebody typed this path, so they are not waiting for the
+		// file to finish arriving.
+		targets = append(targets, runner.Target{
+			Label: label, Library: libName, Roots: []string{abs}, Profile: prof, Named: true,
+		})
 	}
 	return targets, nil
 }
 
-// runTarget plans, and optionally carries out, the work for one target. It
-// returns the number of files that failed outright.
+// liveOutput turns runner events into something worth watching.
 //
-// "Failed" is narrower than "was not processed". A file this tool declines --
-// a symlink it will not replace in place, a plan decide could not make -- is
-// reported and moves on, because declining is a valid result and a library
-// with one odd file in it should not make every run exit non-zero. Only a
-// file that could not be read, or an encode that went wrong, counts.
-func runTarget(ctx context.Context, cfg *config.Config, t target, encoder encode.Encoder, prober probe.Prober, o options) (int, error) {
-	header := "dry run: " + t.label
-	if !o.dryRun {
-		header = t.label
-	}
+// Two shapes, because there are two audiences. A single job in a terminal gets
+// one line rewritten in place, which is what you want when you are sitting
+// there. Anything else -- several workers, or output going to a log the daemon
+// will be read from months later -- gets plain lines with timestamps' worth of
+// context in them, because a carriage return in a log file is noise.
+type liveOutput struct {
+	mu      sync.Mutex
+	w       io.Writer
+	verbose bool
 
-	found := scan.Walk(t.roots, scan.Options{
-		Extensions:  cfg.Scanner.Extensions,
-		IgnoreGlobs: cfg.Scanner.IgnoreGlobs,
-		MinAge:      time.Duration(cfg.Scanner.MinAgeSeconds) * time.Second,
-	})
-
-	rep := &report{title: header, verbose: o.verbose, binary: o.ffmpeg}
-	if len(t.roots) == 1 {
-		rep.root = t.roots[0]
-	}
-	for _, s := range found.Skipped {
-		rep.unscanned = append(rep.unscanned, fmt.Sprintf("%s -- %s", s.Path, s.Reason))
-	}
-	for _, err := range found.Errors {
-		fmt.Fprintf(os.Stderr, "warning: %v\n", err)
-	}
-
-	worked, failures := 0, 0
-	stoppedAtLimit := false
-
-	for _, c := range found.Candidates {
-		if ctx.Err() != nil {
-			break
-		}
-
-		out := outcome{path: c.Path}
-		r, err := prober.Run(ctx, c.Path)
-		if err != nil {
-			out.err = err
-			failures++
-			rep.add(out)
-			continue
-		}
-
-		out.plan = decide.Decide(r, t.profile)
-		switch out.plan.Action {
-		case decide.ActionNone:
-			// The most common outcome, and nothing to prepare.
-		case decide.ActionError:
-			out.declined = out.plan.Reason
-		default:
-			job, err := encoder.Prepare(r, out.plan)
-			if err != nil {
-				// Prepare only refuses for reasons that are about this file
-				// being unsafe to replace, never about the encode itself.
-				out.declined = err.Error()
-			} else {
-				out.job = job
-			}
-		}
-
-		if out.job != nil && !o.dryRun {
-			if o.limit > 0 && worked >= o.limit {
-				stoppedAtLimit = true
-				break
-			}
-			res, err := runOne(ctx, encoder, out.job)
-			out.result = res
-			if err != nil {
-				out.err = err
-				failures++
-			}
-			worked++
-		}
-		rep.add(out)
-	}
-
-	rep.print(os.Stdout, o.dryRun)
-	if stoppedAtLimit {
-		fmt.Fprintf(os.Stdout, "\nstopped at -limit %d; the rest of the library was not looked at.\n", o.limit)
-	}
-	if ctx.Err() != nil {
-		fmt.Fprintf(os.Stdout, "\nstopped early: %v\n", ctx.Err())
-	}
-	if o.dryRun {
-		fmt.Fprintf(os.Stdout, "\nnothing was written. Re-run the same command as `run` to carry this out.\n")
-	}
-	return failures, nil
+	inline bool
+	active bool
+	last   map[int]time.Time
 }
 
-// runOne encodes a single file, printing progress when stdout is a terminal.
-func runOne(ctx context.Context, encoder encode.Encoder, job *encode.Job) (*encode.Result, error) {
-	label := filepath.Base(job.SourcePath)
-	verb := "remuxing"
-	if job.Plan.Action == decide.ActionEncode {
-		verb = "encoding"
-	}
+// progressEvery is how often a job reports itself in line mode. Often enough
+// to show a four-hour encode is alive, rare enough not to fill a log.
+const progressEvery = 30 * time.Second
 
-	if isTerminal(os.Stdout) {
-		last := time.Time{}
-		encoder.OnProgress = func(p encode.Progress) {
-			// Once a second is enough; ffmpeg reports several times that
-			// often and a busy terminal is its own kind of unreadable.
-			if time.Since(last) < time.Second && !p.Done {
+func newLiveOutput(w io.Writer, verbose bool) *liveOutput {
+	return &liveOutput{w: w, verbose: verbose, last: map[int]time.Time{}}
+}
+
+func (l *liveOutput) handle(e runner.Event) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	switch e.Phase {
+	case runner.PhaseQueued:
+		// One job in a terminal is the case worth animating.
+		l.inline = e.Count == 1 && isTerminal(os.Stdout)
+
+	case runner.PhaseStart:
+		if !l.inline {
+			fmt.Fprintf(l.w, "  %s %s\n", verbFor(e.Item), filepath.Base(e.Item.Path))
+		}
+
+	case runner.PhaseProgress:
+		now := time.Now()
+		if l.inline {
+			if now.Sub(l.last[e.Item.Index]) < time.Second && !e.Progress.Done {
 				return
 			}
-			last = time.Now()
-			fmt.Fprintf(os.Stdout, "\r  %s %s ... %3.0f%% (%.1fx)\033[K", verb, truncateLabel(label, 50), p.Fraction*100, p.Speed)
+			l.last[e.Item.Index] = now
+			l.active = true
+			fmt.Fprintf(l.w, "\r  %s %s ... %3.0f%% (%.1fx)\033[K",
+				verbFor(e.Item), truncateLabel(filepath.Base(e.Item.Path), 50),
+				e.Progress.Fraction*100, e.Progress.Speed)
+			return
 		}
-	}
+		if now.Sub(l.last[e.Item.Index]) < progressEvery {
+			return
+		}
+		l.last[e.Item.Index] = now
+		fmt.Fprintf(l.w, "  %s %s ... %3.0f%% (%.1fx)\n",
+			verbFor(e.Item), filepath.Base(e.Item.Path), e.Progress.Fraction*100, e.Progress.Speed)
 
-	res, err := encoder.Run(ctx, job)
-	if isTerminal(os.Stdout) {
-		fmt.Fprint(os.Stdout, "\r\033[K")
+	case runner.PhaseDone:
+		l.clear()
+		delete(l.last, e.Item.Index)
+		if l.inline {
+			return
+		}
+		if e.Err != nil {
+			fmt.Fprintf(l.w, "  %s failed -- the original is untouched\n", filepath.Base(e.Item.Path))
+			return
+		}
+		if e.Result != nil {
+			fmt.Fprintf(l.w, "  %s %s\n", filepath.Base(e.Item.Path), describeResult(e.Result))
+		}
+
+	case runner.PhaseWarning:
+		fmt.Fprintf(os.Stderr, "warning: %s: %v\n", e.Path, e.Err)
 	}
-	return res, err
+}
+
+// finish clears any half-written progress line.
+func (l *liveOutput) finish() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.clear()
+}
+
+func (l *liveOutput) clear() {
+	if l.active {
+		fmt.Fprint(l.w, "\r\033[K")
+		l.active = false
+	}
+}
+
+func verbFor(it *queue.Item) string {
+	if it != nil && it.Kind == queue.KindEncode {
+		return "encoding"
+	}
+	return "remuxing"
 }
 
 func isTerminal(f *os.File) bool {

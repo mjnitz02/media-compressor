@@ -417,22 +417,137 @@ library with one odd file in it should not make every run look like a failure.
 time. Splitting remux from encode work is a scheduling concern that belongs
 with the queue in Phase 4.
 
-## Phase 4 — Scanner, store, queue
+## Phase 4 — Scanner, store, queue ✅ done
 
-- `internal/store` — SQLite. One table of file state keyed on
-  `(path, size, mtime)` so a rescan doesn't re-probe 20k unchanged files, plus
-  a job history table.
-- Walk configured roots, honour `ignore_globs` and `min_age_seconds`.
-- **Age alone is not enough.** A file can be older than the grace period and
-  still be mid-move on a server with this many moving parts, so eligibility is
-  age *and* a size that has not changed between two consecutive scans.
-- **Two worker pools.** Remux/cleanup work is I/O bound and can run several
-  at once; hardware HEVC encoding is bottlenecked on one iGPU and realistically
-  supports 1–2. Conflating these is part of why Tdarr's scheduling felt
-  arbitrary.
-- Config lives in YAML, state lives in SQLite, and the two never mix. Reading
-  the old Tdarr configuration required cracking open a SQLite blob; that is the
-  anti-pattern being avoided.
+`internal/store` (SQLite), `internal/queue` (the two pools) and
+`internal/runner` (the thing that ties scan → decide → work together), plus
+the `scan`, `status` and `daemon` commands.
+
+**Definition of done: met.** A file arriving in a library is picked up on its
+own, waited on until it has stopped moving, decided once, worked on, and
+recorded — and a second scan of an unchanged library probes nothing at all.
+
+### The three modes are one code path
+
+```
+plan    decide and report. Writes nothing, anywhere — not to the media, and
+        not to the database either.
+scan    decide and remember. Touches no media.
+run     scan, and then do the work.
+daemon  run, on the configured interval, until stopped.
+```
+
+`plan` not writing to the database is the part worth stating. A dry run that
+quietly recorded sightings would make `run` after `plan` behave differently
+from `run` alone, and then `--dry-run` would no longer be telling the truth
+about anything. It reads the store and writes none of it, and it will not
+create the database file if there is not one yet.
+
+### Eligibility: age is not enough, and this is why
+
+A file is worked on only once all three hold:
+
+- its mtime is at least `min_age_seconds` old;
+- at least two separate scans have seen it;
+- and its size and mtime have been unchanged for at least `min_age_seconds`.
+
+The middle one is the one that is easy to talk yourself out of. Files arrive
+on this server by themselves and then keep moving, and a share-to-share move
+or an `rsync -t` **preserves the mtime** — so a file can be hours old by its
+own timestamp while its bytes are still being written. Age says it is ready;
+it is not. The only reliable evidence that a file is finished is that a later
+look found it exactly as an earlier one did.
+
+The consequence is worth knowing before it surprises you: **on a brand new
+database, nothing is eligible until a second scan has run.** That is the rule
+working. `plan` ignores it and shows the whole library regardless, flagging
+which files are not eligible yet, so the first thing you run still tells you
+everything.
+
+`-unsettled` overrides it, and naming a path explicitly waives it — somebody
+typed that path, so they are not waiting for the file to finish arriving.
+
+### The decision cache, and the profile fingerprint
+
+`files` is keyed on path, and holds the last decision alongside the `(size,
+mtime)` it was computed from. A changed file discards the decision, the
+failure history and the settle clock together — half-resetting them is how a
+stale "nothing to do" outlives the file it was about.
+
+The other half of the cache key is a hash of the whole profile. Without it,
+editing `floor_kbps` in config.yaml would leave 20,000 cached "nothing to do"
+answers in place and the change would appear to do nothing at all — the worst
+kind of bug, because it looks like the tool working.
+`TestProfileFingerprintTracksEveryQualityLever` pins that every quality lever
+moves the hash.
+
+The cache only ever short-circuits **"there is nothing to do"**. Anything with
+work in it is re-probed, because the ffmpeg arguments have to be derived from
+the file as it is right now. That is not a limitation in practice: on the
+corpus, 1,517 of 1,881 files need nothing, and those are the ones that would
+otherwise be re-probed every three hours forever.
+
+### Failures back off, and then stop
+
+A file that fails for a reason inherent to the file — an encode that comes out
+bigger than the source, an `mkv` that is not actually media — fails identically
+on every scan, forever. Unattended, that is a few thousand copies of the same
+error and a permanently non-zero exit status, which trains you to ignore the
+exit status.
+
+So a failure is recorded against the exact `(path, size, mtime)` and retried
+after 1 hour, then 6, then 24, and then not on its own. `status` lists what is
+being held back and why; `run -retry-failed` clears it. Changing the file
+clears it too, because then it is a different file.
+
+This closes the open question from Phase 3: the "output was larger than the
+source" check can now fire on a real file without that file failing on every
+run for the rest of time.
+
+### Two pools
+
+`internal/queue` runs remuxes and encodes on separate pools, sized separately.
+The property that matters is `TestRemuxesDoNotWaitBehindALongEncode`: a
+hundred second-long remuxes must not sit behind one four-hour encode. It does
+no I/O of its own — it is handed a function and decides only what runs when —
+so the scheduling is testable in milliseconds with ffmpeg nowhere near it.
+
+`Encoder` is a value type, so each worker takes its own copy and hangs its own
+progress callback on it. Sharing one callback across a pool would interleave
+reports from several files with no way to tell them apart.
+
+### Sweeping, and when not to
+
+A scan forgets rows for files it no longer finds — **unless any directory
+failed to read**. A mount that dropped out for a moment looks exactly like a
+library somebody deleted, and forgetting 20,000 files because of a transient
+hiccup means re-probing all of them and waiting two more scans before any of
+them can be touched again. A pass over paths somebody named never sweeps at
+all.
+
+### The dependency
+
+`modernc.org/sqlite`, the pure-Go driver, reached for over `mattn/go-sqlite3`
+so the binary still builds with `CGO_ENABLED=0` and the container's second
+stage stays a single copied file. It sits behind `database/sql`, so swapping
+it is a one-line change if that ever becomes necessary.
+
+One connection (`SetMaxOpenConns(1)`). The writes are tiny and rare — a scan
+is one transaction, a job is two rows — and a single connection makes
+"database is locked" structurally impossible rather than something to handle.
+
+The cost is binary size: `CGO_ENABLED=0 GOOS=linux go build` now produces a
+12 MB static binary, up from about 5 MB. Against a ~450 MB runtime image whose
+bulk is the Intel media driver stack, that is not a number worth optimising.
+
+### `status`
+
+The audit surface until the web UI arrives, written for somebody who last
+looked six months ago: what is outstanding, how many encodes were declined on
+the bitrate floor, what has actually been reclaimed, what is being held back
+after a failure, and the recent history. The floor number is the one to watch
+— it is the main quality lever, and if it moves a long way after a config
+change, that change was a quality change.
 
 ## Phase 5 — Web UI
 

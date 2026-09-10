@@ -198,9 +198,22 @@ scanner:
   # with this many moving parts a file can land, then shift between shares, or
   # appear as a temp file while the real one is still downloading.
   #
-  # Age alone is not sufficient, so a file is only eligible once it is this
-  # old AND its size has not changed since the previous scan.
+  # Age alone is not sufficient, because a share-to-share move and `rsync -t`
+  # both PRESERVE the mtime - so a file can be hours old by its own timestamp
+  # while its bytes are still being written. A file is eligible only once all
+  # three of these hold:
+  #
+  #   - its mtime is at least this old;
+  #   - at least two separate scans have seen it;
+  #   - and its size and mtime have been unchanged for at least this long.
+  #
+  # The consequence, worth knowing before it surprises you: on a brand new
+  # database nothing is eligible until a second scan has run. That is the rule
+  # working. `plan` ignores it and shows you the whole library regardless.
   min_age_seconds: 3600
+
+  # How often `daemon` walks every library. Measured from the end of the last
+  # pass, so a six-hour encode is not followed immediately by another scan.
   interval_minutes: 180
 
 paths:
@@ -208,6 +221,11 @@ paths:
   # same filesystem as the media so the final rename is atomic. When it is
   # not, the tool falls back to a same-directory temp file automatically.
   work_dir: /temp
+  # What has been seen, what was decided about it, and what was done. Config
+  # in YAML, state in SQLite, and the two never mix - reading the old Tdarr
+  # configuration required cracking open a SQLite blob, and that is the
+  # anti-pattern being avoided. Nothing in here needs reading by hand;
+  # `media-compressor status` is the view of it.
   database: /config/media-compressor.db
 
 server:

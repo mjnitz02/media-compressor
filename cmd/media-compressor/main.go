@@ -1,8 +1,8 @@
 // Command media-compressor keeps a media library encoded as HEVC with
 // unwanted tracks removed.
 //
-// `validate`, `plan` and `run` exist. The background scanner and the web UI
-// are later phases; see docs/plan.md.
+// `validate`, `plan`, `scan`, `run`, `status` and `daemon` exist. The web UI
+// is a later phase; see docs/plan.md.
 package main
 
 import (
@@ -15,6 +15,7 @@ import (
 
 	"github.com/mjnitz02/media-compressor/internal/config"
 	"github.com/mjnitz02/media-compressor/internal/decide"
+	"github.com/mjnitz02/media-compressor/internal/runner"
 )
 
 // version is stamped at build time with -ldflags "-X main.version=...".
@@ -27,10 +28,14 @@ usage: media-compressor <command> [flags]
 commands:
   validate    read the config, resolve every profile, and report problems
   plan        print exactly what would happen to a library, and touch nothing
+  scan        look at the library and record what it found; touch no media
   run         do it
+  daemon      scan and run on a loop, which is how this is meant to be left
+  status      what the database knows: what is outstanding, and what went wrong
   version     print the version
 
-plan and run take either -library NAME from the config, or one or more paths:
+plan, scan and run take either -library NAME from the config, or one or more
+paths:
 
   media-compressor plan -library movies
   media-compressor plan /mnt/media_video/movies/Some.Film.2019.mkv
@@ -39,6 +44,11 @@ plan and run take either -library NAME from the config, or one or more paths:
 "plan" is "run -dry-run": the same code path stopped one step short of
 writing anything, so what it prints is the work itself rather than a
 description of it. Start there.
+
+A file is only worked on once it has settled -- old enough, and seen
+unchanged by a second scan -- so on a new database the first run does
+nothing and says so. That is the rule working. "plan" ignores it and shows
+you the whole library regardless.
 
 run "media-compressor <command> -h" for that command's flags.
 `
@@ -54,9 +64,15 @@ func main() {
 	case "validate":
 		err = runValidate(os.Args[2:])
 	case "plan":
-		err = runRun(os.Args[2:], true)
+		err = runPass(os.Args[2:], runner.ModePlan)
+	case "scan":
+		err = runPass(os.Args[2:], runner.ModeScan)
 	case "run":
-		err = runRun(os.Args[2:], false)
+		err = runPass(os.Args[2:], runner.ModeRun)
+	case "daemon":
+		err = runDaemon(os.Args[2:])
+	case "status":
+		err = runStatus(os.Args[2:])
 	case "version":
 		fmt.Println(version)
 	case "-h", "--help", "help":

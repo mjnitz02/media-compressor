@@ -9,6 +9,7 @@ import (
 	"github.com/mjnitz02/media-compressor/internal/config"
 	"github.com/mjnitz02/media-compressor/internal/decide"
 	"github.com/mjnitz02/media-compressor/internal/encode"
+	"github.com/mjnitz02/media-compressor/internal/runner"
 )
 
 func testConfig() *config.Config {
@@ -44,11 +45,11 @@ func TestLibraryTargetCarriesItsOwnProfile(t *testing.T) {
 	if len(targets) != 1 {
 		t.Fatalf("got %d targets, want 1", len(targets))
 	}
-	if targets[0].profile.Name != "anime" {
-		t.Errorf("profile = %s, want anime", targets[0].profile.Name)
+	if targets[0].Profile.Name != "anime" {
+		t.Errorf("profile = %s, want anime", targets[0].Profile.Name)
 	}
-	if !strings.Contains(targets[0].label, "library anime") {
-		t.Errorf("label = %q, should name the library", targets[0].label)
+	if !strings.Contains(targets[0].Label, "library anime") {
+		t.Errorf("label = %q, should name the library", targets[0].Label)
 	}
 }
 
@@ -74,40 +75,40 @@ func TestAnUnknownProfileOverrideIsAnError(t *testing.T) {
 // counts, the reasons and the renames all have to survive into the output.
 func TestReportSummarisesEveryKindOfOutcome(t *testing.T) {
 	rep := &report{title: "dry run: library movies", root: "/mnt/media_video/movies"}
-	rep.add(outcome{
-		path: "/mnt/media_video/movies/Already HEVC.mkv",
-		plan: decide.Plan{Action: decide.ActionNone},
+	rep.add(runner.Outcome{
+		Path: "/mnt/media_video/movies/Already HEVC.mkv",
+		Plan: decide.Plan{Action: decide.ActionNone},
 	})
-	rep.add(outcome{
-		path: "/mnt/media_video/movies/Too Low.mkv",
-		plan: decide.Plan{
+	rep.add(runner.Outcome{
+		Path: "/mnt/media_video/movies/Too Low.mkv",
+		Plan: decide.Plan{
 			Action: decide.ActionNone,
 			Video:  decide.VideoSkippedFloor,
 			Reason: "target bitrate 1200 kbps below floor 3000 kbps",
 		},
 	})
-	rep.add(outcome{
-		path: "/mnt/media_video/movies/Wordy.mkv",
-		plan: decide.Plan{
+	rep.add(runner.Outcome{
+		Path: "/mnt/media_video/movies/Wordy.mkv",
+		Plan: decide.Plan{
 			Action: decide.ActionRemux,
 			Drops:  []decide.Drop{{Kind: "audio", TypeIdx: 1, Codec: "dts", Language: "fra", Reason: "language fra not in keep list"}},
 			Notes:  []string{"kept audio track 0 even though it matches no keep rule"},
 		},
-		job: &encode.Job{SourcePath: "/mnt/media_video/movies/Wordy.mkv", FinalPath: "/mnt/media_video/movies/Wordy.mkv"},
+		Job: &encode.Job{SourcePath: "/mnt/media_video/movies/Wordy.mkv", FinalPath: "/mnt/media_video/movies/Wordy.mkv"},
 	})
-	rep.add(outcome{
-		path: "/mnt/media_video/movies/Old.mp4",
-		plan: decide.Plan{Action: decide.ActionEncode, Video: decide.VideoEncode, TargetCodec: "hevc", Encoder: "hevc_vaapi",
+	rep.add(runner.Outcome{
+		Path: "/mnt/media_video/movies/Old.mp4",
+		Plan: decide.Plan{Action: decide.ActionEncode, Video: decide.VideoEncode, TargetCodec: "hevc", Encoder: "hevc_vaapi",
 			Bitrate: decide.Bitrate{SourceKbps: 9000, TargetKbps: 6000, MinKbps: 4200, MaxKbps: 7800}},
-		job: &encode.Job{SourcePath: "/mnt/media_video/movies/Old.mp4", FinalPath: "/mnt/media_video/movies/Old.mkv"},
+		Job: &encode.Job{SourcePath: "/mnt/media_video/movies/Old.mp4", FinalPath: "/mnt/media_video/movies/Old.mkv"},
 	})
-	rep.add(outcome{
-		path:     "/mnt/media_video/movies/Linked.mkv",
-		declined: "refusing: it is a symlink to /elsewhere/Linked.mkv",
+	rep.add(runner.Outcome{
+		Path:     "/mnt/media_video/movies/Linked.mkv",
+		Declined: "refusing: it is a symlink to /elsewhere/Linked.mkv",
 	})
-	rep.add(outcome{
-		path: "/mnt/media_video/movies/Broken.mkv",
-		err:  errors.New("ffprobe: Invalid data found"),
+	rep.add(runner.Outcome{
+		Path: "/mnt/media_video/movies/Broken.mkv",
+		Err:  errors.New("ffprobe: Invalid data found"),
 	})
 
 	var buf bytes.Buffer
@@ -144,11 +145,71 @@ func TestReportSummarisesEveryKindOfOutcome(t *testing.T) {
 // A multi-line ffprobe error must not read as several filenames.
 func TestReportIndentsMultiLineReasons(t *testing.T) {
 	rep := &report{title: "x"}
-	rep.add(outcome{path: "/lib/Broken.mkv", err: errors.New("first line\nsecond line")})
+	rep.add(runner.Outcome{Path: "/lib/Broken.mkv", Err: errors.New("first line\nsecond line")})
 
 	var buf bytes.Buffer
 	rep.print(&buf, false)
 	if !strings.Contains(buf.String(), "      second line") {
 		t.Errorf("continuation lines should be indented:\n%s", buf.String())
+	}
+}
+
+// A file that is not eligible yet is a first-class outcome, not an omission.
+// On a dry run it is planned in full and flagged; on a real run it has no
+// decision at all and must not be counted as one.
+func TestReportSeparatesFilesThatAreNotEligibleYet(t *testing.T) {
+	planned := &report{title: "dry run: library movies"}
+	planned.add(runner.Outcome{
+		Path:    "/lib/Arriving.mkv",
+		Plan:    decide.Plan{Action: decide.ActionRemux},
+		Waiting: "seen once; eligible when a later scan finds it unchanged",
+		Job:     &encode.Job{SourcePath: "/lib/Arriving.mkv", FinalPath: "/lib/Arriving.mkv"},
+	})
+
+	var buf bytes.Buffer
+	planned.print(&buf, true)
+	got := buf.String()
+
+	for _, want := range []string{
+		"1  remux",
+		"not eligible yet",
+		"planned above anyway",
+		"not yet: seen once",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("dry run summary is missing %q:\n%s", want, got)
+		}
+	}
+
+	// On a real run the same file was never probed, so there is no action to
+	// report -- inventing one would be a decision nobody made.
+	real := &report{title: "library movies"}
+	real.add(runner.Outcome{
+		Path:    "/lib/Arriving.mkv",
+		Waiting: "seen once; eligible when a later scan finds it unchanged",
+	})
+	buf.Reset()
+	real.print(&buf, false)
+	got = buf.String()
+
+	if strings.Contains(got, "leave alone") || strings.Contains(got, "remux") {
+		t.Errorf("a file that was never decided was counted under an action:\n%s", got)
+	}
+	if !strings.Contains(got, "not eligible yet") {
+		t.Errorf("summary is missing the waiting count:\n%s", got)
+	}
+}
+
+// The cache is the reason a scan of 20,000 files takes seconds, so the report
+// has to say how much of the answer came from it.
+func TestReportSaysHowMuchCameFromTheCache(t *testing.T) {
+	rep := &report{title: "library movies"}
+	rep.add(runner.Outcome{Path: "/lib/a.mkv", Plan: decide.Plan{Action: decide.ActionNone}, FromCache: true})
+	rep.add(runner.Outcome{Path: "/lib/b.mkv", Plan: decide.Plan{Action: decide.ActionNone}})
+
+	var buf bytes.Buffer
+	rep.print(&buf, false)
+	if !strings.Contains(buf.String(), "1  answered from the last scan, not re-probed") {
+		t.Errorf("summary should say what was not re-probed:\n%s", buf.String())
 	}
 }
