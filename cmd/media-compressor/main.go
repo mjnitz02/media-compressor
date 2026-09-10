@@ -1,8 +1,8 @@
 // Command media-compressor keeps a media library encoded as HEVC with
 // unwanted tracks removed.
 //
-// Only `validate` exists so far. The scanner, the encoder and the web UI are
-// later phases; see docs/plan.md.
+// `validate`, `plan` and `run` exist. The background scanner and the web UI
+// are later phases; see docs/plan.md.
 package main
 
 import (
@@ -26,7 +26,19 @@ usage: media-compressor <command> [flags]
 
 commands:
   validate    read the config, resolve every profile, and report problems
+  plan        print exactly what would happen to a library, and touch nothing
+  run         do it
   version     print the version
+
+plan and run take either -library NAME from the config, or one or more paths:
+
+  media-compressor plan -library movies
+  media-compressor plan /mnt/media_video/movies/Some.Film.2019.mkv
+  media-compressor run -library movies -limit 5
+
+"plan" is "run -dry-run": the same code path stopped one step short of
+writing anything, so what it prints is the work itself rather than a
+description of it. Start there.
 
 run "media-compressor <command> -h" for that command's flags.
 `
@@ -41,6 +53,10 @@ func main() {
 	switch os.Args[1] {
 	case "validate":
 		err = runValidate(os.Args[2:])
+	case "plan":
+		err = runRun(os.Args[2:], true)
+	case "run":
+		err = runRun(os.Args[2:], false)
 	case "version":
 		fmt.Println(version)
 	case "-h", "--help", "help":

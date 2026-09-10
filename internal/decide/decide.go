@@ -93,8 +93,13 @@ type Plan struct {
 	// tool is allowed to perform.
 	SourceContainer string
 
-	Encoder string
-	Bitrate Bitrate
+	// Encoder is the ffmpeg encoder that will be used, and TargetCodec the
+	// codec it is expected to produce. TargetCodec is carried on the plan so
+	// that the encode package can check the output it actually got without
+	// having to be handed the profile as well.
+	Encoder     string
+	TargetCodec string
+	Bitrate     Bitrate
 
 	Drops   []Drop
 	Changes []Change
@@ -126,6 +131,7 @@ func Decide(r *probe.Result, p Profile) Plan {
 		Profile:         p.Name,
 		Container:       target,
 		SourceContainer: sourceContainer,
+		TargetCodec:     p.Video.TargetCodec,
 		Video:           VideoCopy,
 	}
 

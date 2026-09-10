@@ -337,3 +337,40 @@ func nameList(m map[string]decide.Profile) string {
 	sortStrings(names)
 	return strings.Join(names, ", ")
 }
+
+// LibraryFor returns the library whose configured paths contain path, so that
+// a file found on disk can be matched back to the profile that governs it.
+//
+// Validation guarantees no two libraries have overlapping paths, so at most
+// one can match and the answer does not depend on the order libraries were
+// written in. The longest matching path wins anyway, which keeps this correct
+// if that rule is ever relaxed.
+func (c *Config) LibraryFor(path string) (*Library, bool) {
+	path = filepath.Clean(path)
+	best := -1
+	bestLen := -1
+	for i := range c.Libraries {
+		for _, root := range c.Libraries[i].Paths {
+			root = filepath.Clean(root)
+			if !under(path, root) {
+				continue
+			}
+			if len(root) > bestLen {
+				best, bestLen = i, len(root)
+			}
+		}
+	}
+	if best < 0 {
+		return nil, false
+	}
+	return &c.Libraries[best], true
+}
+
+// under reports whether path is root or is inside it. The separator check is
+// what stops /mnt/media_video/tv matching /mnt/media_video/tv_animated.
+func under(path, root string) bool {
+	if path == root {
+		return true
+	}
+	return strings.HasPrefix(path, strings.TrimSuffix(root, string(filepath.Separator))+string(filepath.Separator))
+}

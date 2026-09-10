@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/mjnitz02/media-compressor/internal/decide"
+	"github.com/mjnitz02/media-compressor/internal/scan"
 )
 
 // Validation is deliberately noisy about things that would otherwise fail
@@ -124,11 +125,10 @@ func validateScanner(c *Config, p *problems) {
 		}
 	}
 	for _, g := range c.Scanner.IgnoreGlobs {
-		// filepath.Match only reports a syntax error, which is all that is
-		// being checked here: it does not understand `**`, so the matching
-		// itself belongs to the scanner in Phase 4.
-		if _, err := filepath.Match(g, "probe"); err != nil {
-			p.addf("scanner.ignore_globs: %q is not a valid pattern: %v", g, err)
+		// scan.Match is the matcher the scanner actually uses, `**` included,
+		// so the syntax accepted here is exactly the syntax that will work.
+		if !scan.ValidPattern(g) {
+			p.addf("scanner.ignore_globs: %q is not a valid pattern", g)
 		}
 	}
 	if c.Scanner.MinAgeSeconds < 0 {

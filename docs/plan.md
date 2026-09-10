@@ -220,10 +220,11 @@ Path existence is checked separately (`CheckPaths`, and
 `validate -check-paths=false`) so that a server's config can be validated from a
 laptop where none of the mounts exist. Parsing itself touches no filesystem.
 
-**Known gap for Phase 4:** `ignore_globs` are only checked for syntax here.
-`path/filepath.Match` does not understand `**`, so the pattern
-`**/.Recycle.Bin/**` in the example config will not match nested paths with the
-standard library alone. The scanner has to implement that matching itself.
+**Gap recorded here, closed in Phase 3:** `path/filepath.Match` does not
+understand `**`, so `**/.Recycle.Bin/**` cannot match nested paths with the
+standard library alone. `scan.Match` implements it, and validation now uses
+that same matcher — so the syntax accepted at startup is the syntax that will
+actually fire.
 
 ### The container toggle
 
@@ -290,27 +291,131 @@ underneath a running playback, and the \*arr stacks track files by path. So
 `Plan.ExtensionChanges()` reports the case so `--dry-run` can call it out
 before anything happens.
 
-## Phase 3 — `encode`, and the safety rules
+## Phase 3 — `encode`, and the safety rules ✅ done
 
-The phase where mistakes are expensive. Implement the rules in README.md
-literally:
+`internal/encode` runs a plan, and `media-compressor plan` / `run` drive it
+over a library or a list of paths. `internal/scan` finds the candidate files.
+
+**Definition of done: met.** All five rules are implemented and each has a test
+that proves the original survives when the rule fires:
 
 1. Encode to a temp file, preferring `work_dir`, falling back to the source
-   directory when `work_dir` is on a different filesystem (so the final
-   `rename()` stays atomic).
-2. Verify: ffprobe parses, duration within ~1s of source, expected stream
-   count present, size not implausibly small.
+   directory when `work_dir` is on a different filesystem.
+2. Verify: ffprobe parses, duration within ~1s, expected streams present, size
+   plausible.
 3. `rename()` over the original only after verification passes.
 4. Never delete the source by any other path.
-5. On any failure, leave the original untouched and keep the temp file for
-   inspection.
+5. On any failure, leave the original untouched and keep the temp file.
 
-`--dry-run` lands here as a first-class mode, printing the full plan for a
-library and touching nothing. Given that the old stack skipped 7,880 files, the
-first question about any run is "what will this actually touch?" — that must be
-answerable without risk.
+### Prepare and Run, and why `--dry-run` is not a simulation
 
-Tests use tiny generated clips (a few frames of `testsrc`), not library files.
+`Encoder.Prepare` works out every path and the complete ffmpeg argument list
+and touches nothing. `Encoder.Run` executes exactly that. `--dry-run` is
+`Prepare` without `Run`, so what it prints is the `Job` that would have been
+executed rather than a description of one — there is no second code path that
+could drift.
+
+### The temp file
+
+The rule is entirely about the final step being a `rename()`. A rename is
+atomic; across filesystems it is not a rename at all but a copy, which is
+neither atomic nor free. So `work_dir` is used only when it is on the same
+filesystem as the file being replaced, and otherwise the temp file goes beside
+the source. On the real server, where `/temp` is cache and the media is on the
+array, that means it will usually go beside the source.
+
+Its name is `.<base>.<hash8>.mediacompressor.partial<ext>`, which is three
+requirements at once: the extension is how ffmpeg picks a muxer, the leading
+dot and `.partial.` mean a leftover from a crashed run is hidden *and* caught
+by the shipped `ignore_globs`, and the path hash keeps two `S01E01.mkv` from
+colliding in a shared work dir. `TestShippedGlobsCatchOurOwnTempFiles` pins the
+second one — a temp file the next scan picks up as a new arrival would be a
+genuinely nasty loop.
+
+### Verification
+
+Every check is pure arithmetic over two probe results and a plan, so it is
+testable without ffmpeg; the only I/O is the caller's ffprobe.
+
+| Check | What it catches |
+|---|---|
+| Output ffprobes cleanly | A file that is not media at all |
+| Duration within 1s | A truncated encode — ffmpeg killed part-way still writes a valid file and can still exit 0 |
+| Source duration is known | An output that cannot be compared to anything cannot be verified, so it cannot replace anything |
+| Stream counts match the plan | ffmpeg quietly declining to carry a stream: a warning on stderr, exit 0, and a file that plays perfectly minus one track |
+| Main video is the target codec (encodes only) | An encoder falling back to something else, which would then be re-encoded on every scan forever |
+| Output ≥ 10% of the source | A header and nothing else |
+| A re-encode did not grow the file | An hour of GPU time spent making the file worse, then deleting the better original |
+
+The last one is the only check that is about the point of the exercise rather
+than about safety. It is off with `VerifyOptions.AllowLargerOutput`, and it is
+on by default because there is no version of that outcome worth keeping.
+
+### Three rules added while building it
+
+Each is a real property of this server rather than a general principle, which
+is why none of them were in the original list:
+
+- **A symlink is refused.** Renaming over the link would leave a regular file
+  at that path and orphan the real file wherever it lives — a quiet
+  reorganisation of the library, which rule 1 forbids. `scan` keeps symlinks
+  out of the candidate list and `Prepare` refuses them again.
+- **The source is re-stat'd immediately before the rename.** Files arrive by
+  themselves here. An \*arr stack upgrading the source mid-encode would
+  otherwise have its new file silently overwritten by a re-encode of the old
+  one, so size and mtime are recorded before the encode and checked after it.
+- **The replacement adopts the original's mode and owner.** A rename gives the
+  new file this process's umask and uid, not the library's. On a share read by
+  Plex, the \*arr stacks and SMB alike, a file that turns up as `0600
+  root:root` is a support call. Chown failing when not running as root is a
+  note, not an error.
+
+A **hard link count above 1** is reported but not refused. The \*arr stacks
+hardlink from the download directory routinely; replacing the library path is
+correct, it just does not reclaim the space until the other link goes.
+
+### Renaming into an existing file
+
+`Prepare` refuses to convert `Film.mp4` when a `Film.mkv` already exists.
+Whatever that file is, it is somebody's.
+
+### `internal/scan`
+
+Walks the roots, filters on extension, applies `ignore_globs` and
+`min_age_seconds`, and reports what it declined and why. `Match` implements
+`**` — the known gap recorded in Phase 2 — by splitting pattern and path into
+segments and letting `**` consume zero or more of them, with `filepath.Match`
+doing one segment at a time. `config` now validates globs with the same
+matcher, so the syntax accepted at startup is the syntax that will work.
+
+A pattern with no `/` in it matches the base name, which is what anyone
+writing `*.partial.*` means.
+
+Eligibility is still only half-implemented on purpose: age is here, and the
+size-stability half needs the store, so it arrives in Phase 4.
+
+### The commands
+
+```
+media-compressor plan -library movies        # touches nothing
+media-compressor run  -library movies -limit 5
+media-compressor plan /mnt/media_video/movies/Some.Film.mkv
+```
+
+A path is matched back to its library — and therefore to its profile — by
+`Config.LibraryFor`. A path inside no library is an error rather than a guess,
+because guessing means encoding a folder to some other library's quality
+target.
+
+The summary leads with counts by action, then lists every file that would be
+touched, then the renames, then `Plan.Notes`. Only a file that could not be
+read or whose encode went wrong sets a non-zero exit status; a file this tool
+*declines* is reported and moves on, because declining is a valid result and a
+library with one odd file in it should not make every run look like a failure.
+
+**Not built here, on purpose:** the worker pools. `run` processes one file at a
+time. Splitting remux from encode work is a scheduling concern that belongs
+with the queue in Phase 4.
 
 ## Phase 4 — Scanner, store, queue
 
