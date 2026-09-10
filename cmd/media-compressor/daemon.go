@@ -11,31 +11,30 @@ import (
 	"time"
 
 	"github.com/mjnitz02/media-compressor/internal/config"
+	"github.com/mjnitz02/media-compressor/internal/daemon"
+	"github.com/mjnitz02/media-compressor/internal/encode"
+	"github.com/mjnitz02/media-compressor/internal/probe"
 	"github.com/mjnitz02/media-compressor/internal/queue"
 	"github.com/mjnitz02/media-compressor/internal/runner"
-	"github.com/mjnitz02/media-compressor/internal/store"
 )
 
 // runDaemon is how this is meant to be left: a loop that scans every library
-// on the configured interval and carries out whatever it finds.
+// on the configured interval, carries out whatever it finds, and serves a page
+// showing what it is doing.
 //
-// Two properties matter more than anything clever it could do instead.
-//
-// It must never wedge. Every failure here is reported and stepped over -- a
-// library that cannot be read, a file ffprobe chokes on, an encode that goes
-// wrong -- because the alternative is a service that stopped making progress
-// in March and nobody noticed until September.
-//
-// And it must be interruptible. SIGTERM finishes the files in flight and stops
-// starting new ones, which matters because Unraid stops containers with one.
+// The loop itself lives in internal/daemon, because the web UI has to be able
+// to watch it and to ask it for a pass, and neither is possible against a
+// local variable in here.
 func runDaemon(args []string) error {
 	fs := flag.NewFlagSet("daemon", flag.ExitOnError)
 	cfgPath := fs.String("config", defaultConfigPath(), "path to config.yaml")
 	once := fs.Bool("once", false, "make a single pass over every library and exit")
 	interval := fs.Duration("interval", 0, "override scanner.interval_minutes")
 	verbose := fs.Bool("v", false, "list every declined and waiting file")
-	ffmpegBin := fs.String("ffmpeg", "", "ffmpeg binary")
-	ffprobeBin := fs.String("ffprobe", "", "ffprobe binary")
+	ffmpegBin := fs.String("ffmpeg", encode.DefaultBinary, "ffmpeg binary")
+	ffprobeBin := fs.String("ffprobe", probe.DefaultBinary, "ffprobe binary")
+	listen := fs.String("listen", "", "override server.listen for the web UI")
+	noWeb := fs.Bool("no-web", false, "do not serve the web UI")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -75,49 +74,65 @@ func runDaemon(args []string) error {
 		Sweep:        true,
 	}
 
-	for {
-		started := time.Now()
-		daemonPass(ctx, cfg, db, opts, *ffmpegBin, *ffprobeBin, *verbose)
-		if *once || ctx.Err() != nil {
-			return nil
-		}
+	live := newLiveOutput(os.Stdout, *verbose)
+	d := &daemon.Daemon{
+		Runner:   newRunner(cfg, db, *ffmpegBin, *ffprobeBin),
+		Targets:  libraryTargets(cfg),
+		Options:  opts,
+		Interval: every,
+		OnEvent:  live.handle,
+		OnPass: func(t runner.Target, sum *runner.Summary, err error) {
+			live.finish()
+			if err != nil {
+				// Reported and stepped over. One library that cannot be read
+				// must not stop the others, or the next pass.
+				fmt.Fprintf(os.Stderr, "library %s: %v\n", t.Library, err)
+				return
+			}
+			printPass(os.Stdout, t.Label, t, sum, opts, *verbose, *ffmpegBin)
+		},
+	}
 
-		// Measured from the end of the pass, not the start: an encode that
-		// took six hours should not be followed immediately by another scan.
-		wait := every - time.Since(started)
-		if wait < time.Minute {
-			wait = time.Minute
-		}
-		fmt.Printf("\nnext scan in %s\n", wait.Round(time.Minute))
-
-		select {
-		case <-time.After(wait):
-		case <-ctx.Done():
-			fmt.Println("stopping")
-			return nil
+	addr := cfg.Server.Listen
+	if *listen != "" {
+		addr = *listen
+	}
+	if !*noWeb && addr != "" {
+		// A UI that cannot bind is worth complaining about loudly, but it is
+		// not worth refusing to encode over: this process's job is the media,
+		// and the page is how you watch it.
+		srv, err := startWeb(cfg, db, d, addr)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: the web UI could not start: %v\n"+
+				"the daemon is running without it\n", err)
+		} else {
+			fmt.Printf("web UI on http://%s\n", addr)
+			defer shutdownWeb(srv)
 		}
 	}
+
+	if *once {
+		d.RunOnce(ctx)
+		return nil
+	}
+	d.Run(ctx)
+	fmt.Println("stopping")
+	return nil
 }
 
-// daemonPass runs every library once. A library that fails is reported and the
-// rest still run.
-func daemonPass(ctx context.Context, cfg *config.Config, db *store.Store, opts runner.Options,
-	ffmpegBin, ffprobeBin string, verbose bool) {
-
+// libraryTargets is every configured library as something the runner can be
+// pointed at.
+func libraryTargets(cfg *config.Config) []runner.Target {
+	targets := make([]runner.Target, 0, len(cfg.Libraries))
 	for i := range cfg.Libraries {
-		if ctx.Err() != nil {
-			return
-		}
 		lib := &cfg.Libraries[i]
-		t := runner.Target{
+		targets = append(targets, runner.Target{
 			Label: fmt.Sprintf("library %s (profile %s, container %s)",
 				lib.Name, lib.Profile.Name, lib.Profile.Container),
 			Library: lib.Name,
 			Roots:   lib.Paths,
 			Profile: lib.Profile,
-		}
-		if _, err := runOneTarget(ctx, cfg, db, t, opts, ffmpegBin, ffprobeBin, verbose); err != nil {
-			fmt.Fprintf(os.Stderr, "library %s: %v\n", lib.Name, err)
-		}
+		})
 	}
+	return targets
 }

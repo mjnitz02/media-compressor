@@ -25,10 +25,11 @@ container and a plugin runtime to issue roughly one ffmpeg command per week.
 
 ## Status
 
-**Phases 1 through 4 complete.** The decision engine is written and green
+**Phases 1 through 5 complete.** The decision engine is written and green
 against the golden corpus, it can be driven from a YAML file, it can carry out
-what it decides, and it now runs itself: a background scanner that remembers
-what it has seen, and two worker pools that do the work.
+what it decides, it runs itself — a background scanner that remembers what it
+has seen, and two worker pools that do the work — and it now shows you what it
+is doing on a web page.
 
 | Package | What it does | Coverage |
 |---|---|---|
@@ -37,11 +38,14 @@ what it has seen, and two worker pools that do the work.
 | `internal/config` | YAML to profiles and libraries, and the checks on it | 98.4% |
 | `internal/encode` | run the plan, verify it, replace the original | 88.9% |
 | `internal/scan` | find the candidate files under a library's paths | 92.0% |
-| `internal/store` | what has been seen, what was decided, what was done | 83.7% |
+| `internal/store` | what has been seen, what was decided, what was done | 85.0% |
 | `internal/queue` | two worker pools: I/O-bound remuxes, GPU-bound encodes | 88.1% |
 | `internal/runner` | walk → remember → decide → work, as one pass | 91.4% |
+| `internal/daemon` | the loop, and a live picture of it something else can read | 92.3% |
+| `internal/web` | the status pages, and the two buttons | 79.7% |
+| `internal/human` | bytes and durations, formatted the same way everywhere | 96.8% |
 
-`go test ./...` runs 249 tests. The headline one is `TestGoldenCorpus`, which
+`go test ./...` runs 285 tests. The headline one is `TestGoldenCorpus`, which
 replays all **1,881** real decisions recorded from the Tdarr install this
 replaces and asserts three things per file: the same video decision, the same
 bitrate arithmetic to the kbps, and the **same ffmpeg arguments token for
@@ -69,8 +73,9 @@ media-compressor validate -check-paths=false   # what will each library get?
 media-compressor plan -library movies          # what would this touch?
 media-compressor scan -library movies          # look, and remember; touch nothing
 media-compressor run  -library movies -limit 5 # do it, five files at a time
-media-compressor daemon                        # scan and run on a loop
+media-compressor daemon                        # scan and run on a loop, and serve the UI
 media-compressor status                        # what is outstanding, what went wrong
+media-compressor serve                         # the same, as a web page, read only
 ```
 
 `plan` is `run -dry-run` — the same code path stopped one step short of writing
@@ -133,9 +138,44 @@ after 1 hour, then 6, then 24, and then not on its own. `status` lists what is
 being held back and why; `run -retry-failed` clears it, and so does the file
 itself changing.
 
-Still to build: the web UI and the container. See [docs/plan.md](docs/plan.md).
+### The web UI
 
-Requires Go 1.27+ and ffmpeg.
+`daemon` serves it on `server.listen` (`:8080` by default); `-no-web` turns it
+off and `-listen` overrides the address. `serve` is the same pages with nothing
+running behind them — a read-only look at the database, which is what you want
+pointed at a copy of it.
+
+Six pages, and the third is the one that earns the whole thing:
+
+| Page | What it answers |
+|---|---|
+| Overview | What has it seen, what has it decided, what has it saved |
+| Outstanding | What is queued, and for each file that is not eligible yet, why not |
+| **Decisions** | **What it concluded about every file, and why — in the words `decide` produced** |
+| Notes | Where a safety rule overrode the configuration |
+| Held back | What failed, what it said, and when it will try again |
+| History | Every file that has been replaced, with what ffmpeg said when one did not |
+
+This tool declines far more files than it touches, on purpose, and the only way
+to know that the declining is right is to be able to read the reasons. So every
+row carries the reason string the decision engine produced, verbatim, rather
+than a status code the page translates back into English.
+
+Two things on it write anything. **Run a pass now** asks the loop for the pass
+it would have made at the next interval — the same settle rules, the same
+safety checks, nothing it would not have done by itself. **Try again** clears
+the backoff on one file that failed. There is no way from the page to make this
+tool do anything to a file that the configuration does not already say.
+
+There is no login, as there was none on the stack this replaces: put it on a
+LAN. A cross-origin POST is refused, so a page on another site cannot start an
+encode in your browser, but that is the extent of it.
+
+Still to build: the container. See [docs/plan.md](docs/plan.md).
+
+Requires Go 1.27+ and ffmpeg. No node, and no frontend build step: the pages
+are `html/template`, one stylesheet and one vendored copy of HTMX, all compiled
+into the binary.
 
 ## Documentation
 

@@ -1,0 +1,24 @@
+{{define "main"}}
+<p class="lede">Files whose last decision said there is work to do. A file is only acted on once it has settled — old enough by its mtime, and seen unchanged by a later scan — because a share-to-share move preserves the mtime, so age alone will happily call a half-copied file ready.</p>
+
+{{if .Files}}
+<table>
+  <thead><tr><th>File</th><th>What</th><th class="num">Size</th><th>Bitrate</th><th>Decided</th><th>State</th></tr></thead>
+  <tbody>
+  {{range .Files}}
+    <tr>
+      <td class="path" title="{{.Path}}"><strong>{{base .Path}}</strong><div class="muted">{{dir .Path}}</div></td>
+      <td>{{action .Decision.Action}}</td>
+      <td class="num">{{bytes .Size}}</td>
+      <td class="muted">{{if .Decision.TargetKbps}}{{kbps .Decision.SourceKbps}} &rarr; {{kbps .Decision.TargetKbps}}{{else}}streams only{{end}}</td>
+      <td class="muted">{{ago .Decision.DecidedAt $.Now}}</td>
+      <td>{{if .Waiting}}<span class="muted">{{.Waiting}}</span>{{else}}<span class="pill ok">ready</span>{{end}}</td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+{{if .Truncated}}<p class="muted">Showing {{len .Files}} of {{.Total}}.</p>{{end}}
+{{else}}
+<p class="empty">Nothing is outstanding. Every file that has been scanned is already as its profile wants it.</p>
+{{end}}
+{{end}}

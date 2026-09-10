@@ -1,0 +1,27 @@
+{{define "jobtable"}}
+<table>
+  <thead><tr><th>File</th><th>What</th><th>When</th><th>Took</th><th>Before</th><th>After</th><th>Saved</th></tr></thead>
+  <tbody>
+  {{range .Jobs}}
+    <tr class="{{statusClass .Status}}">
+      <td class="path" title="{{.Path}}">{{base .Path}}</td>
+      <td>{{action .Action}} <span class="pill {{statusClass .Status}}">{{status .Status}}</span></td>
+      <td class="muted">{{ago .StartedAt $.Now}}</td>
+      <td class="muted">{{duration .Elapsed}}</td>
+      <td class="num">{{bytes .SizeBefore}}</td>
+      <td class="num">{{if .SizeAfter}}{{bytes .SizeAfter}}{{else}}--{{end}}</td>
+      <td class="num">{{saved .SizeBefore .SizeAfter}}</td>
+    </tr>
+    {{if .Error}}
+    <tr class="detail bad">
+      <td colspan="7">
+        {{firstLine .Error}}
+        {{if .FFmpegTail}}<details><summary>what ffmpeg said</summary><pre>{{.FFmpegTail}}</pre></details>{{end}}
+      </td>
+    </tr>
+    {{end}}
+    {{range .Notes}}<tr class="detail note"><td colspan="7">{{.}}</td></tr>{{end}}
+  {{end}}
+  </tbody>
+</table>
+{{end}}

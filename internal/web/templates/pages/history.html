@@ -1,0 +1,9 @@
+{{define "main"}}
+<p class="lede">Every file this tool has replaced, newest first. A failed row means the work went wrong and the original was left exactly as it was — nothing is ever deleted except after a verified replacement.</p>
+
+{{if .Jobs}}
+{{template "jobtable" .}}
+{{else}}
+<p class="empty">No work has been carried out yet.</p>
+{{end}}
+{{end}}

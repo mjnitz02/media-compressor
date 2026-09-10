@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Title}} — media-compressor</title>
+<link rel="stylesheet" href="/static/app.css?v={{.Version}}">
+<script src="/static/htmx.min.js?v={{.Version}}"></script>
+</head>
+<body>
+<header class="top">
+  <a class="brand" href="/">media-compressor</a>
+  <nav>
+    <a href="/" {{if eq .Nav "overview"}}class="on"{{end}}>Overview</a>
+    <a href="/queue" {{if eq .Nav "queue"}}class="on"{{end}}>Outstanding{{if .Pending}} <span class="badge">{{.Pending}}</span>{{end}}</a>
+    <a href="/skipped" {{if eq .Nav "skipped"}}class="on"{{end}}>Decisions</a>
+    <a href="/notes" {{if eq .Nav "notes"}}class="on"{{end}}>Notes{{if .Notes}} <span class="badge warn">{{.Notes}}</span>{{end}}</a>
+    <a href="/blocked" {{if eq .Nav "blocked"}}class="on"{{end}}>Held back{{if .Counts.Blocked}} <span class="badge bad">{{.Counts.Blocked}}</span>{{end}}</a>
+    <a href="/history" {{if eq .Nav "history"}}class="on"{{end}}>History</a>
+  </nav>
+</header>
+
+<main>
+  {{template "activity" .}}
+  <h1>{{.Title}}</h1>
+  {{template "main" .}}
+</main>
+
+<footer>
+  media-compressor {{.Version}} · everything on this page comes from the last scan, not from the disk right now
+</footer>
+</body>
+</html>

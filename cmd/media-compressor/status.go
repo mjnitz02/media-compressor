@@ -11,6 +11,7 @@ import (
 
 	"github.com/mjnitz02/media-compressor/internal/config"
 	"github.com/mjnitz02/media-compressor/internal/decide"
+	"github.com/mjnitz02/media-compressor/internal/human"
 	"github.com/mjnitz02/media-compressor/internal/store"
 )
 
@@ -68,7 +69,7 @@ func printStatus(ctx context.Context, w io.Writer, db *store.Store, dbPath strin
 	fmt.Fprintf(w, "\nwork done\n")
 	fmt.Fprintf(w, "  %6d finished\n", counts.JobsDone)
 	fmt.Fprintf(w, "  %6d failed\n", counts.JobsFailed)
-	fmt.Fprintf(w, "  %6s reclaimed\n", humanBytes(counts.BytesSaved))
+	fmt.Fprintf(w, "  %6s reclaimed\n", human.Bytes(counts.BytesSaved))
 
 	blocked, err := db.BlockedFiles(ctx, limit)
 	if err != nil {
@@ -100,7 +101,7 @@ func printStatus(ctx context.Context, w io.Writer, db *store.Store, dbPath strin
 			switch {
 			case j.Status == store.StatusDone && j.SizeAfter > 0:
 				fmt.Fprintf(w, "      %s -> %s in %s\n",
-					humanBytes(j.SizeBefore), humanBytes(j.SizeAfter), j.Elapsed.Round(time.Second))
+					human.Bytes(j.SizeBefore), human.Bytes(j.SizeAfter), j.Elapsed.Round(time.Second))
 			case j.Error != "":
 				fmt.Fprintf(w, "%s\n", indent(j.Error))
 			}

@@ -1,0 +1,66 @@
+{{define "activity"}}
+<section id="activity" class="activity" hx-get="/partials/activity" hx-trigger="every 3s" hx-swap="outerHTML">
+  {{if .Message}}<p class="message">{{.Message}}</p>{{end}}
+
+  {{if not .HasEngine}}
+    <div class="activity-head">
+      <span class="dot"></span>
+      <strong>not running here</strong>
+      <span class="muted">this is a read-only view of the database; the daemon does the work</span>
+    </div>
+  {{else}}{{with .Activity}}
+    <div class="activity-head">
+      <span class="dot {{if .Busy}}on{{end}}"></span>
+      <strong>{{if .Busy}}{{.Phase}}{{else}}idle{{end}}</strong>
+      {{if .Target}}<span class="muted">{{.Target}}</span>{{end}}
+      <span class="spacer"></span>
+      {{if .Busy}}
+        <span class="muted">started {{ago .PassStarted $.Now}}</span>
+      {{else}}
+        <span class="muted">next pass {{until .NextPass $.Now}}</span>
+      {{end}}
+      <form hx-post="/pass" hx-target="#activity" hx-swap="outerHTML">
+        <button type="submit">Run a pass now</button>
+      </form>
+    </div>
+
+    {{if .Busy}}
+      <p class="muted counts">
+        {{.Considered}} files considered
+        {{if .Probed}}· {{.Probed}} probed{{end}}
+        {{if .Queued}}· {{.Queued}} queued{{end}}
+        {{if .Done}}· {{.Done}} done{{end}}
+        {{if .Failed}}· {{.Failed}} failed{{end}}
+      </p>
+    {{end}}
+
+    {{if .Running}}
+      <ul class="running">
+        {{range .Running}}
+        <li>
+          <div class="job">
+            <span class="kind {{.Kind}}">{{.Kind}}</span>
+            <span class="path" title="{{.Path}}">{{base .Path}}</span>
+            <span class="spacer"></span>
+            <span class="muted">{{since .Started $.Now}}{{if .Progress.Speed}} · {{printf "%.1fx" .Progress.Speed}}{{end}}</span>
+          </div>
+          <progress max="100" value="{{printf "%.0f" (mul .Progress.Fraction 100)}}"></progress>
+        </li>
+        {{end}}
+      </ul>
+    {{end}}
+
+    {{if .Warnings}}
+      <ul class="warnings">
+        {{range .Warnings}}
+        <li><span class="muted">{{clock .When}}</span> {{if .Path}}{{base .Path}}: {{end}}{{.Err}}</li>
+        {{end}}
+      </ul>
+    {{end}}
+  {{end}}{{end}}
+</section>
+{{end}}
+
+{{define "retried"}}
+<tr class="cleared"><td colspan="6">{{base .}} will be tried again on the next pass.</td></tr>
+{{end}}

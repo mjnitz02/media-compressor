@@ -190,6 +190,17 @@ func runOneTarget(ctx context.Context, cfg *config.Config, db *store.Store, t ru
 		return 0, err
 	}
 
+	printPass(os.Stdout, header, t, sum, opts, verbose, ffmpegBin)
+	return sum.Failures(), nil
+}
+
+// printPass writes what one pass did. It is separate from running the pass
+// because the daemon runs passes from its own loop and prints them the same
+// way -- a run in the terminal and a run three months into a daemon's life
+// should read identically.
+func printPass(w io.Writer, header string, t runner.Target, sum *runner.Summary,
+	opts runner.Options, verbose bool, ffmpegBin string) {
+
 	for _, werr := range sum.WalkErrors {
 		fmt.Fprintf(os.Stderr, "warning: %v\n", werr)
 	}
@@ -199,21 +210,20 @@ func runOneTarget(ctx context.Context, cfg *config.Config, db *store.Store, t ru
 		rep.root = t.Roots[0]
 	}
 	rep.addSummary(sum)
-	rep.print(os.Stdout, opts.Mode == runner.ModePlan)
+	rep.print(w, opts.Mode == runner.ModePlan)
 
 	if sum.StoppedAtLimit {
-		fmt.Fprintf(os.Stdout, "\nstopped at -limit %d; the rest of the library was left for the next run.\n", opts.Limit)
+		fmt.Fprintf(w, "\nstopped at -limit %d; the rest of the library was left for the next run.\n", opts.Limit)
 	}
 	if sum.Cancelled {
-		fmt.Fprintf(os.Stdout, "\nstopped early: %v\n", ctx.Err())
+		fmt.Fprintf(w, "\nstopped early: the run was interrupted, so the rest of the library was left alone.\n")
 	}
 	switch opts.Mode {
 	case runner.ModePlan:
-		fmt.Fprintf(os.Stdout, "\nnothing was written. Re-run the same command as `run` to carry this out.\n")
+		fmt.Fprintf(w, "\nnothing was written. Re-run the same command as `run` to carry this out.\n")
 	case runner.ModeScan:
-		fmt.Fprintf(os.Stdout, "\nno media was touched; what was found has been recorded. Run `run` to carry it out.\n")
+		fmt.Fprintf(w, "\nno media was touched; what was found has been recorded. Run `run` to carry it out.\n")
 	}
-	return sum.Failures(), nil
 }
 
 // resolveTargets works out what to operate on and, crucially, under which

@@ -141,22 +141,8 @@ func (s *Store) RecentJobs(ctx context.Context, limit int) ([]JobRecord, error) 
 	if limit <= 0 {
 		limit = 20
 	}
-	rows, err := s.db.QueryContext(ctx,
+	return s.queryJobs(ctx,
 		"SELECT "+jobColumns+" FROM jobs ORDER BY started_at DESC, id DESC LIMIT ?", limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var out []JobRecord
-	for rows.Next() {
-		j, err := scanJob(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, j)
-	}
-	return out, rows.Err()
 }
 
 // Counts is the summary the status command and the Phase 5 dashboard show.
@@ -245,23 +231,9 @@ func (s *Store) BlockedFiles(ctx context.Context, limit int) ([]FileState, error
 	if limit <= 0 {
 		limit = 50
 	}
-	rows, err := s.db.QueryContext(ctx,
+	return s.queryFiles(ctx,
 		"SELECT "+fileColumns+" FROM files WHERE failures > 0 ORDER BY failures DESC, failed_at DESC LIMIT ?",
 		limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var out []FileState
-	for rows.Next() {
-		f, err := scanFile(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, f)
-	}
-	return out, rows.Err()
 }
 
 // PendingFiles lists files whose cached decision says there is work to do.
@@ -270,22 +242,8 @@ func (s *Store) PendingFiles(ctx context.Context, limit int) ([]FileState, error
 	if limit <= 0 {
 		limit = 100
 	}
-	rows, err := s.db.QueryContext(ctx, "SELECT "+fileColumns+` FROM files
+	return s.queryFiles(ctx, "SELECT "+fileColumns+` FROM files
 		WHERE decided_at > 0 AND action IN (?, ?) AND failures = 0
 		ORDER BY path LIMIT ?`,
 		string(decide.ActionRemux), string(decide.ActionEncode), limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var out []FileState
-	for rows.Next() {
-		f, err := scanFile(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, f)
-	}
-	return out, rows.Err()
 }

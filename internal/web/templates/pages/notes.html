@@ -1,0 +1,28 @@
+{{define "main"}}
+<p class="lede">A note means a safety rule overrode the configuration — most often that dropping a file's last audio track was refused, because a track in a language nobody asked for still beats a silent video. These are worth reading proactively: each one is the config asking for something this tool would not do.</p>
+
+{{if .Files}}
+<h2>From decisions</h2>
+<table>
+  <thead><tr><th>File</th><th>What was decided</th><th>Note</th></tr></thead>
+  <tbody>
+  {{range .Files}}
+    <tr>
+      <td class="path" title="{{.Path}}"><strong>{{base .Path}}</strong><div class="muted">{{dir .Path}}</div></td>
+      <td class="muted">{{action .Decision.Action}}</td>
+      <td>{{range .Decision.Notes}}<div class="note">{{.}}</div>{{end}}</td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+{{end}}
+
+{{if .Jobs}}
+<h2>From work that was carried out</h2>
+{{template "jobtable" .}}
+{{end}}
+
+{{if and (not .Files) (not .Jobs)}}
+<p class="empty">No safety rule has had to override the configuration. That is the result you want.</p>
+{{end}}
+{{end}}

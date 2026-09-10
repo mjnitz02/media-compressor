@@ -1,0 +1,28 @@
+{{define "main"}}
+<p class="lede">A file that fails for a reason inherent to the file fails identically on every scan, forever. So a failure is recorded against that exact file and retried after an hour, then six, then a day, and then not on its own. Retrying here clears that; the file goes through the same checks as any other on the next pass. The original is untouched in every case.</p>
+
+{{if .Files}}
+<table>
+  <thead><tr><th>File</th><th class="num">Failures</th><th>Last failed</th><th>Next try</th><th>What went wrong</th><th></th></tr></thead>
+  <tbody>
+  {{range .Files}}
+    <tr>
+      <td class="path" title="{{.Path}}"><strong>{{base .Path}}</strong><div class="muted">{{dir .Path}}</div></td>
+      <td class="num">{{.Failures}}</td>
+      <td class="muted">{{ago .FailedAt $.Now}}</td>
+      <td class="muted">{{if .RetryAfter}}{{until .RetryAfter $.Now}}{{else}}given up on{{end}}</td>
+      <td class="bad err">{{.LastError}}</td>
+      <td>
+        <form hx-post="/retry" hx-target="closest tr" hx-swap="outerHTML">
+          <input type="hidden" name="path" value="{{.Path}}">
+          <button type="submit" class="quiet">Try again</button>
+        </form>
+      </td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+{{else}}
+<p class="empty">Nothing is being held back.</p>
+{{end}}
+{{end}}

@@ -229,4 +229,11 @@ paths:
   database: /config/media-compressor.db
 
 server:
+  # Where the daemon serves the status pages: what is queued, what is running,
+  # what was left alone and why. `serve` shows the same pages read-only, with
+  # nothing running behind them.
+  #
+  # There is no login, exactly as there was none on the stack this replaces, so
+  # this belongs on a LAN. An empty value here still means :8080; to serve
+  # nothing at all, run `daemon -no-web`.
   listen: ":8080"

@@ -472,9 +472,14 @@ func (r *Runner) execute(ctx context.Context, q *queue.Queue, it queue.Item, out
 			if res != nil {
 				sizeAfter = res.Verification.OutputSize
 			}
-			var notes []string
+			// The plan's notes are kept alongside the encoder's. A note
+			// means a safety rule overrode the configuration, and the row
+			// that recorded it is deleted the moment the file is replaced --
+			// so without this, the notes worth reading are exactly the ones
+			// that disappear.
+			notes := append([]string(nil), out.Plan.Notes...)
 			if res != nil {
-				notes = res.Notes
+				notes = append(notes, res.Notes...)
 			}
 			if ferr := r.Store.FinishJob(ctx, jobID, store.JobFinish{
 				FinishedAt: finished,

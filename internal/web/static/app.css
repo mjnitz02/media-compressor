@@ -1,0 +1,159 @@
+/* One stylesheet, no build step, no framework. It is a status page for one
+   person on a LAN, and it should be legible at a glance six months from now.  */
+
+:root {
+	--bg: #f7f7f5;
+	--card: #ffffff;
+	--ink: #1b1b1a;
+	--muted: #6b6b66;
+	--line: #e2e2dd;
+	--accent: #2f6f4f;
+	--ok: #2f6f4f;
+	--bad: #a33227;
+	--warn: #8a6d1f;
+	--busy: #2b5f8a;
+}
+
+@media (prefers-color-scheme: dark) {
+	:root {
+		--bg: #16181a;
+		--card: #1e2124;
+		--ink: #e8e8e4;
+		--muted: #9a9a94;
+		--line: #2c3034;
+		--accent: #6fc39a;
+		--ok: #6fc39a;
+		--bad: #e58a7d;
+		--warn: #d8bd6c;
+		--busy: #7fb3dd;
+	}
+}
+
+* { box-sizing: border-box; }
+
+body {
+	margin: 0;
+	background: var(--bg);
+	color: var(--ink);
+	font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+.top {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 1rem 1.5rem;
+	align-items: baseline;
+	padding: 0.9rem 1.5rem;
+	background: var(--card);
+	border-bottom: 1px solid var(--line);
+}
+
+.brand { font-weight: 600; text-decoration: none; color: var(--ink); }
+
+nav { display: flex; flex-wrap: wrap; gap: 1.1rem; }
+nav a { color: var(--muted); text-decoration: none; }
+nav a:hover { color: var(--ink); }
+nav a.on { color: var(--ink); font-weight: 600; box-shadow: inset 0 -2px 0 var(--accent); }
+
+main { max-width: 1150px; margin: 0 auto; padding: 1.5rem; }
+
+h1 { font-size: 1.4rem; margin: 1.6rem 0 0.4rem; }
+h2 { font-size: 1.05rem; margin: 2rem 0 0.5rem; font-weight: 600; }
+h2 .more { font-size: 0.85rem; font-weight: 400; margin-left: 0.6rem; }
+
+a { color: var(--accent); }
+
+.lede { color: var(--muted); max-width: 68ch; margin: 0.2rem 0 1rem; }
+.muted { color: var(--muted); }
+.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.bad { color: var(--bad); }
+.spacer { flex: 1; }
+.empty { color: var(--muted); padding: 1.5rem; background: var(--card); border: 1px dashed var(--line); border-radius: 8px; }
+
+/* the activity strip, polled by htmx  */
+.activity {
+	background: var(--card);
+	border: 1px solid var(--line);
+	border-radius: 8px;
+	padding: 0.8rem 1rem;
+	margin-top: 1.2rem;
+}
+
+.activity-head { display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem; }
+.activity-head strong { text-transform: lowercase; }
+.activity .counts { margin: 0.5rem 0 0; font-size: 0.9rem; }
+.activity .message { margin: 0 0 0.6rem; color: var(--accent); }
+
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--line); flex: none; }
+.dot.on { background: var(--busy); animation: pulse 1.6s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: 0.35; } }
+
+.running { list-style: none; margin: 0.8rem 0 0; padding: 0; display: grid; gap: 0.7rem; }
+.running .job { display: flex; align-items: center; gap: 0.6rem; }
+.running progress { width: 100%; height: 6px; margin-top: 0.25rem; }
+progress { appearance: none; border: none; background: var(--line); border-radius: 3px; overflow: hidden; }
+progress::-webkit-progress-bar { background: var(--line); }
+progress::-webkit-progress-value { background: var(--busy); }
+progress::-moz-progress-bar { background: var(--busy); }
+
+.warnings { list-style: none; margin: 0.7rem 0 0; padding: 0; font-size: 0.9rem; color: var(--warn); }
+
+.kind {
+	font-size: 0.72rem;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+	padding: 0.1rem 0.4rem;
+	border-radius: 4px;
+	border: 1px solid var(--line);
+	color: var(--muted);
+	flex: none;
+}
+.kind.encode { color: var(--busy); border-color: var(--busy); }
+
+button {
+	font: inherit;
+	padding: 0.35rem 0.8rem;
+	border-radius: 6px;
+	border: 1px solid var(--accent);
+	background: var(--accent);
+	color: var(--card);
+	cursor: pointer;
+}
+button:hover { filter: brightness(1.08); }
+button.quiet { background: transparent; color: var(--muted); border-color: var(--line); }
+button.quiet:hover { color: var(--ink); }
+
+/* the summary tiles  */
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(165px, 1fr)); gap: 0.8rem; margin-top: 1.2rem; }
+.tile { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 0.8rem 0.9rem; }
+.tile .n { display: block; font-size: 1.5rem; font-variant-numeric: tabular-nums; }
+.tile .l { display: block; color: var(--muted); font-size: 0.85rem; margin-top: 0.15rem; }
+
+table { width: 100%; border-collapse: collapse; background: var(--card); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+th, td { text-align: left; padding: 0.5rem 0.7rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.03em; color: var(--muted); font-weight: 600; }
+tbody tr:last-child td { border-bottom: none; }
+td.path { max-width: 34rem; overflow-wrap: anywhere; }
+td.paths div { color: var(--muted); font-size: 0.9rem; overflow-wrap: anywhere; }
+
+td.err { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 0.88rem; max-width: 32rem; }
+tr.detail td { padding-top: 0; border-bottom: 1px solid var(--line); font-size: 0.9rem; }
+tr.detail.note td, .note { color: var(--warn); }
+tr.cleared td { color: var(--accent); }
+
+.pill { font-size: 0.75rem; padding: 0.05rem 0.4rem; border-radius: 999px; border: 1px solid currentColor; }
+.pill.ok { color: var(--ok); }
+.pill.bad { color: var(--bad); }
+.pill.busy { color: var(--busy); }
+
+.badge { font-size: 0.75rem; padding: 0.05rem 0.4rem; border-radius: 999px; background: var(--line); color: var(--ink); }
+.badge.bad { background: var(--bad); color: var(--card); }
+.badge.warn { background: var(--warn); color: var(--card); }
+
+details summary { cursor: pointer; color: var(--muted); }
+pre { overflow-x: auto; background: var(--bg); padding: 0.6rem; border-radius: 6px; font-size: 0.82rem; }
+code { font-size: 0.9em; }
+
+footer { max-width: 1150px; margin: 0 auto; padding: 2rem 1.5rem; color: var(--muted); font-size: 0.85rem; }
+
+form { display: inline; margin: 0; }

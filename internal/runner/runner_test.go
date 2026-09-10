@@ -735,3 +735,42 @@ func TestAnUnreadableFileBacksOffLikeAFailedEncode(t *testing.T) {
 		t.Error("want the unreadable file reported as backed off rather than silently gone")
 	}
 }
+
+// A note means a safety rule overrode the configuration, and the row that
+// recorded it is deleted the moment the file is replaced. So the note has to
+// be copied onto the job, or the cases where a rule actually fired on work
+// that happened are exactly the ones that vanish from the history.
+func TestASafetyNoteSurvivesTheFileBeingReplaced(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t)
+	src := h.path("Only One Track.mkv")
+	// A single audio track in a language the profile does not keep, and a
+	// floor low enough that the file is worth re-encoding -- so the note is
+	// recorded on work that actually happens.
+	h.profile.Video.Encoder = "libx265"
+	h.profile.Video.Bitrate.FloorKbps = 0
+	makeClip(t, src, "libx264", "chi")
+
+	h.settle()
+	out := h.pass(Options{Mode: ModeRun}).find(t, "Only One Track.mkv")
+	if out.Err != nil {
+		t.Fatalf("run failed: %v", out.Err)
+	}
+	if len(out.Plan.Notes) == 0 {
+		t.Fatalf("the plan recorded no note for a file whose only audio track is unwanted")
+	}
+
+	jobs, err := h.store.RecentJobs(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs) != 1 {
+		t.Fatalf("%d jobs recorded, want 1", len(jobs))
+	}
+	if len(jobs[0].Notes) == 0 {
+		t.Fatal("the job kept no note, so the history cannot say a rule overrode the config")
+	}
+	if jobs[0].Notes[0] != out.Plan.Notes[0] {
+		t.Errorf("job note = %q, want the plan's note %q", jobs[0].Notes[0], out.Plan.Notes[0])
+	}
+}

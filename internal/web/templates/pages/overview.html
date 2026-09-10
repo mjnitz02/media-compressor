@@ -1,0 +1,73 @@
+{{define "main"}}
+<section class="tiles">
+  <div class="tile"><span class="n">{{.Counts.Files}}</span><span class="l">files seen</span></div>
+  <div class="tile"><span class="n">{{actionCount .Counts.ByAction "none"}}</span><span class="l">already as the profile wants them</span></div>
+  <div class="tile"><span class="n">{{.Pending}}</span><span class="l">outstanding</span></div>
+  <div class="tile"><span class="n">{{.Counts.SkippedFloor}}</span><span class="l">encodes declined on the floor</span></div>
+  <div class="tile"><span class="n">{{bytes .Counts.BytesSaved}}</span><span class="l">reclaimed</span></div>
+  <div class="tile"><span class="n">{{.Counts.JobsDone}}</span><span class="l">files finished{{if .Counts.JobsFailed}}, {{.Counts.JobsFailed}} failed{{end}}</span></div>
+</section>
+
+{{if .Groups}}
+<h2>What it decided</h2>
+<p class="lede">Leaving a file alone is the commonest result here and it is meant to be: the cost of declining is a few gigabytes, and the cost of over-compressing is an unwatchable file with no source to go back to. Every row links to the files it counts, each with the reason it was given.</p>
+<table>
+  <thead><tr><th>The file</th><th>Its video</th><th class="num">Files</th></tr></thead>
+  <tbody>
+  {{range .Groups}}
+    <tr>
+      <td><a href="/skipped?action={{.Action}}&amp;video={{.Video}}">{{action .Action}}</a></td>
+      <td class="muted">{{video .Video}}</td>
+      <td class="num">{{.Count}}</td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+{{else}}
+<p class="empty">Nothing has been scanned yet. Start the daemon, or run <code>media-compressor scan -library NAME</code>.</p>
+{{end}}
+
+{{if .Libraries}}
+<h2>Libraries</h2>
+<table>
+  <thead><tr><th>Name</th><th>Profile</th><th>Container</th><th>Paths</th></tr></thead>
+  <tbody>
+  {{range .Libraries}}
+    <tr>
+      <td>{{.Name}}</td>
+      <td>{{.Profile}}</td>
+      <td>{{.Container}}</td>
+      <td class="paths">{{range .Paths}}<div>{{.}}</div>{{end}}</td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+{{end}}
+
+{{if and .HasEngine .Activity.Recent}}
+<h2>Recent passes</h2>
+<table>
+  <thead><tr><th>Library</th><th>Started</th><th>Took</th><th class="num">Considered</th><th class="num">Encoded</th><th class="num">Remuxed</th><th class="num">Failed</th><th class="num">Reclaimed</th></tr></thead>
+  <tbody>
+  {{range .Activity.Recent}}
+    <tr>
+      <td>{{if .Library}}{{.Library}}{{else}}{{.Target}}{{end}}</td>
+      <td class="muted">{{ago .Started $.Now}}</td>
+      <td class="muted">{{duration .Elapsed}}</td>
+      <td class="num">{{.Considered}}</td>
+      <td class="num">{{.Encoded}}</td>
+      <td class="num">{{.Remuxed}}</td>
+      <td class="num {{if .Failed}}bad{{end}}">{{.Failed}}</td>
+      <td class="num">{{if .Saved}}{{bytes .Saved}}{{else}}--{{end}}</td>
+    </tr>
+    {{if .Err}}<tr class="detail bad"><td colspan="8">{{.Err}}</td></tr>{{end}}
+  {{end}}
+  </tbody>
+</table>
+{{end}}
+
+{{if .Jobs}}
+<h2>Recent work <a class="more" href="/history">all of it</a></h2>
+{{template "jobtable" .}}
+{{end}}
+{{end}}

@@ -549,20 +549,69 @@ after a failure, and the recent history. The floor number is the one to watch
 — it is the main quality lever, and if it moves a long way after a config
 change, that change was a quality change.
 
-## Phase 5 — Web UI
+## Phase 5 — Web UI ✅ done
 
-Read-mostly, deliberately minimal: what's queued, what's running with progress,
-what was skipped and why, recent history, and a button to trigger a scan.
+`internal/web` serves six pages; `internal/daemon` is the loop they watch.
+`html/template` and `embed.FS`, one vendored copy of HTMX for polling, one
+stylesheet. No SPA, no node, no build step, and the binary is still one file.
 
-- Go `html/template` + `embed.FS`, HTMX (one vendored file) for polling.
-- **No SPA, no node, no build step.** A queue view does not need one, and
-  adding one doubles both the container and the build.
-- The "skipped and why" view is the most valuable screen — it is how you
-  audit that the decision engine is behaving. It also has to make sense to
-  someone who last looked six months ago, which means every skip carries the
-  reason string `decide` produced, not a status code.
-- `Plan.Notes` gets its own view: a note means a safety rule overrode the
-  configuration, which is the one thing worth reading proactively.
+**Definition of done: met.** What is queued, what is running with live
+progress, what was left alone and why, the notes, the failures, the history,
+and a button that asks for a pass.
+
+### The loop had to move out of main
+
+The UI has to see what the loop is doing while it is doing it, and to ask it
+for a pass. Neither is possible against a local variable in a `for` loop in
+`main`, so the loop is now `internal/daemon`, holding the live picture behind
+a mutex and a trigger channel buffered by one — a second press while a pass is
+running is the same request, not a second pass.
+
+It watches through `runner.OnEvent`, the hook Phase 4 left for exactly this,
+so `runner` still knows nothing about either the terminal or the web. The live
+model is built entirely from those events, which means what the page can show
+is precisely what the events carry, and `TestActivityFollowsARunningJob` pins
+that.
+
+`web.Engine` is a two-method interface — `Activity()` and `Trigger()` — so
+`serve` can hand over nothing at all and get a read-only view of the database
+that says so, rather than a page showing an idle daemon that is not there.
+
+### The decisions page is the one that earns the package
+
+The rest is a dashboard. This one is how you audit that the engine is
+behaving: a table of every conclusion by `(Action, Video)` — the two are
+separate because a file can be left alone as a whole while its video was
+specifically declined on the floor — and under it the files in one bucket,
+each with the reason string `decide` produced, verbatim. No status code the
+page translates back into English, because that is a second place for the
+meaning to drift.
+
+### Two things found by building it
+
+**A safety note used to disappear exactly when it mattered.** Notes live on
+the decision row, and that row is deleted the moment the file is replaced. So
+a note recorded on work that actually happened was the one case the notes view
+could not show. `runner.execute` now copies `Plan.Notes` onto the job row
+beside the encoder's own notes; `TestASafetyNoteSurvivesTheFileBeingReplaced`
+pins it.
+
+**The decision cache is keyed on the profile, and the UI reads the same
+numbers `status` does.** `internal/human` exists so that a file `status` calls
+"4.2 GiB" is not "4509715660" on the queue page.
+
+### What can be pressed, and what that can do
+
+Two writes: "run a pass now", which asks the loop for the pass it would have
+made at the next interval, and "try again", which clears the backoff on one
+file. Neither can make this tool do anything to a file the configuration does
+not already say — the settle rules, the floor and every safety check are the
+same ones a timed pass goes through.
+
+There is no login, as there was none on the stack this replaces. A POST whose
+`Origin` is not this host is refused, so a page on another site cannot start
+an encode in the operator's browser; that is the whole of the security model,
+and it is a LAN service.
 
 ## Phase 6 — Docker + GHCR
 

@@ -9,6 +9,7 @@ import (
 
 	"github.com/mjnitz02/media-compressor/internal/decide"
 	"github.com/mjnitz02/media-compressor/internal/encode"
+	"github.com/mjnitz02/media-compressor/internal/human"
 	"github.com/mjnitz02/media-compressor/internal/runner"
 )
 
@@ -263,7 +264,7 @@ func describeResult(res *encode.Result) string {
 	case res.Replaced:
 		v := res.Verification
 		return fmt.Sprintf("replaced in %s: %s -> %s (%.0f%%)",
-			res.Elapsed.Round(1e9), humanBytes(v.SourceSize), humanBytes(v.OutputSize), v.SizeRatio()*100)
+			res.Elapsed.Round(1e9), human.Bytes(v.SourceSize), human.Bytes(v.OutputSize), v.SizeRatio()*100)
 	case res.TempKept != "":
 		return "failed; output kept at " + res.TempKept
 	default:
@@ -310,23 +311,6 @@ func orNone(s string) string {
 		return "untagged"
 	}
 	return s
-}
-
-func humanBytes(n int64) string {
-	const unit = 1024
-	neg := ""
-	if n < 0 {
-		neg, n = "-", -n
-	}
-	if n < unit {
-		return fmt.Sprintf("%s%d B", neg, n)
-	}
-	div, exp := int64(unit), 0
-	for v := n / unit; v >= unit; v /= unit {
-		div *= unit
-		exp++
-	}
-	return fmt.Sprintf("%s%.1f %ciB", neg, float64(n)/float64(div), "KMGTP"[exp])
 }
 
 func sortedKeys(m map[string]int) []string {

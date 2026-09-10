@@ -1,8 +1,8 @@
 // Command media-compressor keeps a media library encoded as HEVC with
 // unwanted tracks removed.
 //
-// `validate`, `plan`, `scan`, `run`, `status` and `daemon` exist. The web UI
-// is a later phase; see docs/plan.md.
+// `validate`, `plan`, `scan`, `run`, `status`, `daemon` and `serve` exist.
+// The container is a later phase; see docs/plan.md.
 package main
 
 import (
@@ -32,6 +32,7 @@ commands:
   run         do it
   daemon      scan and run on a loop, which is how this is meant to be left
   status      what the database knows: what is outstanding, and what went wrong
+  serve       the same thing as a web page, read only, with nothing running
   version     print the version
 
 plan, scan and run take either -library NAME from the config, or one or more
@@ -49,6 +50,11 @@ A file is only worked on once it has settled -- old enough, and seen
 unchanged by a second scan -- so on a new database the first run does
 nothing and says so. That is the rule working. "plan" ignores it and shows
 you the whole library regardless.
+
+The daemon also serves the web UI on server.listen (:8080 by default): what
+is queued, what is running, what was left alone and why, and a button that
+asks for a pass now. It has no login -- put it on a LAN, as with the stack
+this replaces.
 
 run "media-compressor <command> -h" for that command's flags.
 `
@@ -73,6 +79,8 @@ func main() {
 		err = runDaemon(os.Args[2:])
 	case "status":
 		err = runStatus(os.Args[2:])
+	case "serve":
+		err = runServe(os.Args[2:])
 	case "version":
 		fmt.Println(version)
 	case "-h", "--help", "help":

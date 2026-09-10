@@ -1,0 +1,38 @@
+{{define "main"}}
+<p class="lede">What the decision engine concluded about every file it has looked at, and why. This is the screen to read when you want to know whether it is behaving: each reason below is the one the engine produced, word for word.</p>
+
+<table class="groups">
+  <thead><tr><th>The file</th><th>Its video</th><th class="num">Files</th></tr></thead>
+  <tbody>
+  {{range .Groups}}
+    <tr>
+      <td><a href="/skipped?action={{.Action}}&amp;video={{.Video}}">{{action .Action}}</a></td>
+      <td class="muted">{{video .Video}}</td>
+      <td class="num">{{.Count}}</td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+
+<h2>{{.Selected}}</h2>
+{{if .Files}}
+<table>
+  <thead><tr><th>File</th><th class="num">Size</th><th>Bitrate</th><th>Reason</th></tr></thead>
+  <tbody>
+  {{range .Files}}
+    <tr>
+      <td class="path" title="{{.Path}}"><strong>{{base .Path}}</strong><div class="muted">{{dir .Path}}</div></td>
+      <td class="num">{{bytes .Size}}</td>
+      <td class="muted">{{if .Decision.SourceKbps}}{{kbps .Decision.SourceKbps}}{{if .Decision.TargetKbps}} &rarr; {{kbps .Decision.TargetKbps}}{{end}}{{else}}--{{end}}</td>
+      <td>{{if .Decision.Reason}}{{.Decision.Reason}}{{else}}<span class="muted">nothing to change</span>{{end}}
+        {{range .Decision.Notes}}<div class="note">{{.}}</div>{{end}}
+      </td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+{{if .Truncated}}<p class="muted">Showing the first {{len .Files}}.</p>{{end}}
+{{else}}
+<p class="empty">No files in this group.</p>
+{{end}}
+{{end}}
