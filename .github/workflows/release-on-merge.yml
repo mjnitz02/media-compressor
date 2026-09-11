@@ -1,0 +1,139 @@
+# On a merge to main: cut the GitHub release named by VERSION, publish the
+# image to GHCR, and attach the bare binary to the release.
+#
+# Release is driven by the VERSION file rather than by pushing a tag, so that
+# the version a merge publishes is reviewable in the pull request that changes
+# it. pull-request-version.yml bumps the patch automatically, and CI fails a PR
+# that lands on main without a bump -- otherwise this job would find the release
+# already there and quietly publish nothing.
+#
+# The binary is published as well as the image because it is the whole program:
+# one static file that needs nothing but an ffmpeg on PATH, and somebody running
+# this outside Docker should not have to build it.
+name: Release on merge to main
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Only what this workflow needs: contents:write to cut the release, and
+# packages:write to push to GHCR. Both are covered by the workflow's own
+# GITHUB_TOKEN, so no registry credentials are stored in the repo.
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Read VERSION
+        id: version
+        run: |
+          v=$(tr -d '[:space:]' < VERSION)
+          case "$v" in
+            [0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "VERSION is $v, which is not x.y.z" >&2; exit 1 ;;
+          esac
+          echo "value=$v" >> "$GITHUB_OUTPUT"
+          echo "Releasing $v"
+
+      # A re-run, or a merge that changed nothing but docs, must not try to
+      # publish over a release that already exists.
+      - name: Has this version already shipped?
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "v${{ steps.version.outputs.value }}" --json tagName >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "v${{ steps.version.outputs.value }} is already released -- nothing to do"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # The tests have already run on this commit via CI, but a release is the
+      # one build nobody gets to re-do, so they run again here.
+      - name: Install ffmpeg
+        if: steps.check.outputs.exists == 'false'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+
+      - name: go test
+        if: steps.check.outputs.exists == 'false'
+        run: go test -race ./...
+
+      - uses: docker/setup-buildx-action@v3
+        if: steps.check.outputs.exists == 'false'
+
+      - uses: docker/login-action@v3
+        if: steps.check.outputs.exists == 'false'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # `latest` comes for free: metadata-action's default flavor is
+      # latest=auto, which tags the highest semver build as latest. That is the
+      # tag the Unraid compose stack follows.
+      - name: Docker tags and labels
+        if: steps.check.outputs.exists == 'false'
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=semver,pattern={{version}},value=v${{ steps.version.outputs.value }}
+            type=semver,pattern={{major}}.{{minor}},value=v${{ steps.version.outputs.value }}
+            type=semver,pattern={{major}},value=v${{ steps.version.outputs.value }}
+          labels: |
+            org.opencontainers.image.title=media-compressor
+            org.opencontainers.image.description=Keeps a media library encoded as HEVC in MKV, without the junk tracks
+            org.opencontainers.image.version=${{ steps.version.outputs.value }}
+
+      # linux/amd64 only, deliberately. The encoders this exists to drive are
+      # Intel QSV and VAAPI; an arm64 image would imply hardware transcoding it
+      # cannot do. The Dockerfile refuses any other architecture outright.
+      - name: Build and push
+        if: steps.check.outputs.exists == 'false'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          build-args: |
+            VERSION=${{ steps.version.outputs.value }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Build the bare binary
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
+            -ldflags "-s -w -X main.version=${{ steps.version.outputs.value }}" \
+            -o media-compressor-linux-amd64 ./cmd/media-compressor
+          sha256sum media-compressor-linux-amd64 > media-compressor-linux-amd64.sha256
+
+      # Last, so that a release only appears once the image it names is actually
+      # in the registry. The tag is created here from the merge commit.
+      - name: Create the release
+        if: steps.check.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "v${{ steps.version.outputs.value }}" \
+            --target "$GITHUB_SHA" \
+            --title "${{ steps.version.outputs.value }}" \
+            --generate-notes \
+            media-compressor-linux-amd64 \
+            media-compressor-linux-amd64.sha256 \
+            unraid/media-compressor.xml

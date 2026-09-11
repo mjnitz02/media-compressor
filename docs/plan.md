@@ -722,6 +722,72 @@ build it.
 
 ---
 
+## Phase 7 — PUID/PGID, and a release that happens by itself ✅ done
+
+Phase 6 shipped an image that had never met the machine it was built for. Two
+things stood between it and a first deployment: it ran as root, and nothing had
+ever been published to GHCR.
+
+### Running as the uid that already owns the library
+
+Every share on the target box is owned by `99:100`, so a container writing as
+root leaves files the rest of the machine cannot manage. The standard
+`PUID`/`PGID` pair is now honoured, and the entrypoint drops to it with
+`setpriv` before exec'ing the program.
+
+What makes this more than a convention here is safety rule 11. Every
+replacement adopts the original file's owner, and the Phase 6 reasoning was
+that `chown` to an arbitrary uid needs `CAP_CHOWN`, therefore root. Running as
+the uid that *already owns the library* inverts that: the adoption becomes a
+same-owner `chown`, which the kernel permits the file's owner to make with no
+privilege at all. The rule holds either way, and the "could not set owner" note
+stops being the expected outcome of running unprivileged and starts meaning
+something real — a file owned by somebody unexpected.
+
+Unset still means root, because a plain Linux host where the media is already
+root's is a real case and should not have to opt out of a NAS convention.
+
+Three details that are not obvious:
+
+- **`--user` wins, loudly.** A container given `--user` never had root to drop
+  from. Silently ignoring one of two conflicting instructions is worse than
+  saying so, so the entrypoint warns and carries on as the uid it was given.
+- **Supplementary groups are carried across, not cleared.** `setpriv` demands
+  one of `--clear-groups`/`--groups`/`--init-groups`, and the obvious choice
+  throws away anything `group_add` put there. That is how a render node which
+  is *not* world-readable gets reached — on this box `renderD128` happens to be
+  `crwxrwxrwx`, so it does not matter today, and a machine where it does would
+  have failed on every encode with nobody watching. `id -G` minus gid 0 and the
+  target gid is passed through instead.
+- **Only `/config` and `/temp` are chowned.** Media is emphatically not on that
+  list. It belongs to the operator; chowning a library would be exactly the
+  kind of unasked-for change the safety rules exist to prevent.
+
+CI proves all of it against the built image rather than asserting it: `docker
+top` (host-side ids, so it is the kernel's answer and not the container's
+`/etc/passwd` agreeing with itself) for the uid in both modes, `stat` on the
+bind mount for the chown, and `/proc/1/status` for the surviving groups.
+`testdata/container-config.yaml` exists so those steps have a valid config that
+does not depend on the shape of `config.example.yaml`, which is documentation
+and should be free to change.
+
+### Release on merge, from a VERSION file
+
+The tag-driven `release.yml` was replaced by the pattern already in use on the
+other repo on this box: a `VERSION` file, bumped automatically on every pull
+request, and a merge to `main` that cuts the release and pushes to GHCR.
+
+The reason to prefer it is that the version a merge publishes becomes
+reviewable in the pull request that changes it, rather than living in a tag
+somebody has to remember to push. The failure mode it introduces is that a PR
+landing without a bump would find the release already present and publish
+*nothing*, succeeding quietly — so CI fails a pull request whose `VERSION`
+matches the base branch. Loud beats silent.
+
+`latest` comes from `metadata-action`'s default `latest=auto`, which is the tag
+the Unraid stack follows. The release is created last, so it never names an
+image that is not yet in the registry.
+
 ## Deferred, deliberately
 
 Revisit only once phases 1–6 are running in production:

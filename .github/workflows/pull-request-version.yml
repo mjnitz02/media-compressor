@@ -1,0 +1,60 @@
+# Bump the patch version on every pull request, so that a merge to main always
+# has a version to release and nobody has to remember to do it by hand.
+#
+# A PR that deliberately sets its own version (a minor or major bump) is left
+# alone: the check is whether VERSION differs from the base branch at all, not
+# whether this workflow was the one that changed it.
+name: Auto bump version on PR
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize]
+
+permissions:
+  contents: write
+
+jobs:
+  bump:
+    name: Auto bump patch version
+    runs-on: ubuntu-latest
+    # A push from this job would otherwise re-trigger the same workflow on the
+    # `synchronize` it causes. The commit is made by github-actions[bot], so
+    # skipping its own pushes is enough to stop that.
+    if: github.actor != 'github-actions[bot]'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+
+      - name: Check and bump
+        run: |
+          set -eu
+          read_version() { tr -d '[:space:]' < "$1"; }
+
+          # The base branch has no VERSION at all on the pull request that
+          # introduces the file. Nothing to bump against, and the version in
+          # this branch is by definition new.
+          if ! git show "origin/${{ github.base_ref }}:VERSION" > /tmp/base-VERSION 2>/dev/null; then
+            echo "No VERSION on ${{ github.base_ref }} yet -- this PR introduces it. Nothing to do."
+            exit 0
+          fi
+          BASE=$(read_version /tmp/base-VERSION)
+          CURRENT=$(read_version VERSION)
+
+          if [ "$CURRENT" != "$BASE" ]; then
+            echo "Version already bumped ($BASE -> $CURRENT). Nothing to do."
+            exit 0
+          fi
+
+          IFS=. read -r MAJOR MINOR PATCH <<< "$BASE"
+          NEW="${MAJOR}.${MINOR}.$((PATCH + 1))"
+          echo "Bumping $BASE -> $NEW"
+          echo "$NEW" > VERSION
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add VERSION
+          git commit -m "Bump version to $NEW"
+          git push

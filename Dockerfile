@@ -100,10 +100,17 @@ EXPOSE 8080
 HEALTHCHECK --interval=60s --timeout=5s --start-period=10s --retries=3 \
   CMD curl -fsS http://127.0.0.1:8080/healthz || exit 1
 
-# Root, deliberately. Safety rule 11 gives every replacement the original
-# file's owner, and chown to an arbitrary uid needs CAP_CHOWN. Running this
-# with --user works and is safe -- the encode is still verified before the
-# replace -- but replaced files take this process's uid instead, and the run
-# records a note saying it could not set the owner.
+# Starts as root so the entrypoint can honour PUID/PGID, which is how a NAS
+# expects to be told who owns the files a container writes. Set them (99:100 on
+# Unraid) and the program runs as that user; leave them unset and it stays root.
+#
+# Either way safety rule 11 still gives every replacement the original file's
+# owner. As root that is CAP_CHOWN doing the work; as the uid that already owns
+# the library it is a same-owner chown, which the kernel allows the owner to
+# make. Only a file owned by somebody else fails, and that is recorded as a note
+# on the run rather than losing a verified encode.
+#
+# --user still works and is still safe -- it just skips the drop entirely, and
+# the entrypoint says so rather than pretending PUID had an effect.
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["daemon"]

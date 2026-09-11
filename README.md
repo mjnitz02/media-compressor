@@ -178,6 +178,7 @@ encode in your browser, but that is the extent of it.
 docker run -d --name media-compressor \
   --device /dev/dri \
   -p 8080:8080 \
+  -e PUID=99 -e PGID=100 \
   -v /mnt/user/appdata/media-compressor:/config \
   -v /mnt/user/media_video:/mnt/media_video \
   ghcr.io/mjnitz02/media-compressor:latest
@@ -208,12 +209,31 @@ fails on every file it tries to encode, so either pass the device or set
 `encoder: libx265` in the config. `docker exec media-compressor vainfo` will
 tell you whether the GPU arrived.
 
-**It runs as root, deliberately.** Every replacement adopts the original
-file's owner, and `chown` to an arbitrary uid needs `CAP_CHOWN`. Running with
-`--user` is safe — the encode is verified before the replace either way — but
-replaced files then take the container's uid, and the run records a note
-saying it could not set the owner. On a share read by Plex, the \*arr stacks
-and SMB, that is a support call waiting to happen.
+**`PUID` and `PGID` decide who owns the replaced files.** Set them to the
+account that already owns the library — `99:100` on Unraid, which is
+`nobody:users` — and the container drops to that user before doing anything.
+Leave them unset and it stays root, which is the right answer on a plain Linux
+host where the media is already root's.
+
+This matters more here than in most containers. Every replacement adopts the
+original file's owner (safety rule 11), and on a share read by Plex, the \*arr
+stacks and SMB, a file that turns up as `0600 root:root` is a support call
+waiting to happen. Running as the uid that already owns the library makes that
+adoption a same-owner `chown`, which the kernel lets a file's owner make with
+no special privilege; running as root makes it `CAP_CHOWN` doing the work.
+Either way the rule holds, and a file owned by somebody unexpected is recorded
+as a note on the run rather than costing a verified encode.
+
+`UMASK` is honoured too, though it has less to do than usual: replaced media
+keeps the permissions of the file it replaced, so the mask only really reaches
+the database and scratch files.
+
+Two ways this can be overridden, both deliberate. `--user` (or `user:` in
+compose) wins outright — the container cannot drop from a uid it never had —
+and the entrypoint says so at startup rather than pretending `PUID` did
+something. And `group_add` is carried across the drop rather than cleared, so
+a render node that is not world-readable can still be reached by adding its
+group.
 
 **A separately mounted `/temp` will not be used, and that is fine.** The last
 step of a replace is a `rename()`, which is what makes the swap atomic, and
