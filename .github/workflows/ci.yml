@@ -50,6 +50,41 @@ jobs:
       - name: go test
         run: go test -race ./...
 
+  version:
+    name: VERSION was bumped
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # release-on-merge.yml publishes whatever VERSION names and skips
+      # silently if that release already exists. So a PR that lands without a
+      # bump does not fail loudly at release time -- it succeeds while shipping
+      # nothing, which is the worse outcome. Catch it here instead.
+      #
+      # pull-request-version.yml normally does the bump automatically; this job
+      # is red only in the window before that push lands, or if it was skipped.
+      - name: Compare against the base branch
+        run: |
+          # A pull request that introduces VERSION has nothing to compare
+          # against, and is by definition a new version.
+          if ! base=$(git show "origin/${{ github.base_ref }}:VERSION" 2>/dev/null); then
+            echo "No VERSION on ${{ github.base_ref }} yet -- this PR introduces it."
+            exit 0
+          fi
+          base=$(printf '%s' "$base" | tr -d '[:space:]')
+          head=$(tr -d '[:space:]' < VERSION)
+          echo "base: $base"
+          echo "head: $head"
+          if [ "$base" = "$head" ]; then
+            echo "VERSION is still $base -- a merge would publish nothing." >&2
+            echo "pull-request-version.yml bumps this automatically; if it did not," >&2
+            echo "edit VERSION yourself." >&2
+            exit 1
+          fi
+
   image:
     runs-on: ubuntu-latest
     steps:
@@ -79,3 +114,79 @@ jobs:
           docker run --rm --entrypoint ffmpeg media-compressor:ci -hide_banner -encoders \
             | grep -E 'hevc_vaapi|hevc_qsv'
           docker image ls media-compressor:ci --format 'image size: {{.Size}}'
+
+      # PUID/PGID is the difference between a container that fits on a NAS and
+      # one that leaves root-owned files across somebody's library, so it is
+      # worth proving rather than assuming. Three observable effects: the
+      # process really runs as the requested ids, /config ends up owned by
+      # them, and leaving the variables unset still means root -- which is what
+      # a plain `docker run` outside a NAS gets.
+      - name: Prove the PUID/PGID drop
+        run: |
+          set -eu
+
+          # `docker top` needs pid in the ps format or it cannot parse the
+          # output at all ("Couldn't find PID field in ps output"). It reports
+          # host-side ids, so this is the kernel's answer rather than the
+          # container's own /etc/passwd agreeing with itself.
+          uid_of() {
+            for _ in $(seq 1 20); do
+              u=$(docker top "$1" -o pid,uid,args 2>/dev/null \
+                  | awk 'NR>1 && /media-compressor/ {print $2; exit}')
+              if [ -n "${u:-}" ]; then echo "$u"; return 0; fi
+              sleep 1
+            done
+            return 1
+          }
+
+          run_case() {
+            label=$1; shift
+            work=$(mktemp -d)
+            mkdir -p "$work/config" "$work/temp" "$work/media"
+            cp testdata/container-config.yaml "$work/config/config.yaml"
+            cid=$(docker run -d "$@" \
+              -v "$work/config":/config \
+              -v "$work/temp":/temp \
+              -v "$work/media":/media \
+              media-compressor:ci daemon)
+            if ! CASE_UID=$(uid_of "$cid"); then
+              echo "$label: the daemon never came up" >&2
+              docker logs "$cid" >&2 || true
+              docker rm -f "$cid" >/dev/null 2>&1 || true
+              exit 1
+            fi
+            CASE_OWNER=$(stat -c '%u:%g' "$work/config")
+            docker rm -f "$cid" >/dev/null 2>&1 || true
+            echo "$label: uid $CASE_UID, /config owned by $CASE_OWNER"
+          }
+
+          run_case "PUID=99 PGID=100" -e PUID=99 -e PGID=100
+          [ "$CASE_UID" = "99" ] || { echo "expected uid 99, got $CASE_UID" >&2; exit 1; }
+          [ "$CASE_OWNER" = "99:100" ] || { echo "expected /config chowned to 99:100, got $CASE_OWNER" >&2; exit 1; }
+
+          run_case "PUID unset"
+          [ "$CASE_UID" = "0" ] || { echo "expected root with PUID unset, got $CASE_UID" >&2; exit 1; }
+
+      # group_add is how a render node that is not world-readable gets reached,
+      # and a plain --clear-groups across the drop would throw it away
+      # silently -- the failure would only show up as every encode failing on a
+      # machine nobody is watching.
+      - name: Supplementary groups survive the drop
+        run: |
+          set -eu
+          work=$(mktemp -d)
+          mkdir -p "$work/config" "$work/temp" "$work/media"
+          cp testdata/container-config.yaml "$work/config/config.yaml"
+          cid=$(docker run -d -e PUID=99 -e PGID=100 --group-add 44 --group-add 18 \
+            -v "$work/config":/config -v "$work/temp":/temp -v "$work/media":/media \
+            media-compressor:ci daemon)
+          sleep 5
+          groups=$(docker exec "$cid" sh -c 'grep ^Groups: /proc/1/status' | cut -f2-)
+          docker rm -f "$cid" >/dev/null 2>&1 || true
+          echo "pid 1 supplementary groups: $groups"
+          case " $groups " in
+            *" 18 "*) ;; *) echo "gid 18 was dropped" >&2; exit 1 ;;
+          esac
+          case " $groups " in
+            *" 44 "*) ;; *) echo "gid 44 was dropped" >&2; exit 1 ;;
+          esac

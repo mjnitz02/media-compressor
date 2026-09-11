@@ -63,4 +63,16 @@
   <Config Name="TZ" Target="TZ" Default="America/New_York" Mode=""
           Description="Timezone, so the times on the History page are yours."
           Type="Variable" Display="always" Required="false" Mask="false">America/New_York</Config>
+
+  <Config Name="PUID" Target="PUID" Default="99" Mode=""
+          Description="The user replaced files end up owned by. 99 is Unraid's nobody, which owns every share by default. It also matters for correctness: this tool gives each replacement the original file's owner, and running as the uid that already owns the library lets it do that without extra privileges."
+          Type="Variable" Display="always" Required="false" Mask="false">99</Config>
+
+  <Config Name="PGID" Target="PGID" Default="100" Mode=""
+          Description="The group replaced files end up owned by. 100 is Unraid's users group."
+          Type="Variable" Display="always" Required="false" Mask="false">100</Config>
+
+  <Config Name="UMASK" Target="UMASK" Default="022" Mode=""
+          Description="Permission mask for files this container creates. Replaced media keeps the permissions the file it replaced had, so this mostly affects the database and any scratch files."
+          Type="Variable" Display="advanced" Required="false" Mask="false">022</Config>
 </Container>

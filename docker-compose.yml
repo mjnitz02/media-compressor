@@ -26,6 +26,20 @@ services:
     environment:
       - TZ=America/New_York
 
+      # Who the replaced files end up owned by. 99:100 is nobody:users, the
+      # account Unraid gives every share; use whatever owns yours. Unset means
+      # the container stays root, which is right for a plain Linux host where
+      # the media is already root's.
+      #
+      # This is more than cosmetic here: every replacement is given the
+      # original file's owner, and running as the uid that already owns the
+      # library makes that a same-owner chown the kernel allows without
+      # CAP_CHOWN. A mismatch is recorded as a note on the run rather than
+      # failing the encode.
+      - PUID=99
+      - PGID=100
+      - UMASK=022
+
     volumes:
       # config.yaml and the SQLite database of what has been seen and done.
       - ./config:/config

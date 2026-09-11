@@ -1,0 +1,50 @@
+# A complete, valid configuration used only to smoke-test the container image.
+#
+# It is deliberately not config.example.yaml: that file is documentation aimed
+# at an operator, and a CI step that wants a config has no business depending on
+# the shape of a document meant to be read. This one exists to answer one
+# question -- does the daemon come up and serve -- so it names libx265 and no
+# render device, and points at paths the test harness creates.
+defaults:
+  profile: standard
+  container: mkv
+  workers:
+    remux: 1
+    encode: 1
+
+profiles:
+  standard:
+    video:
+      target_codec: hevc
+      encoder: libx265
+      leave_alone: [hevc, av1]
+      source_bitrate_basis: container
+      bitrate:
+        tiers:
+          - { above: 10000, divisor: 2.0 }
+          - { above: 6000, divisor: 1.75 }
+          - { above: 3000, divisor: 1.5 }
+          - { above: 0, divisor: 1.0 }
+        min_multiplier: 0.7
+        max_multiplier: 1.3
+        floor_kbps: 3000
+    audio:
+      multichannel_to: ac3
+      multichannel_threshold: 6
+      keep_languages: [eng, und]
+      primary_languages: [eng]
+      keep_untagged: true
+    subtitles:
+      keep_languages: [eng, und]
+
+scanner:
+  extensions: [mkv, mp4]
+
+paths:
+  work_dir: /temp
+  database: /config/media-compressor.db
+
+libraries:
+  - name: ci
+    paths:
+      - /media
