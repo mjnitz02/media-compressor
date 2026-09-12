@@ -190,3 +190,58 @@ jobs:
           case " $groups " in
             *" 44 "*) ;; *) echo "gid 44 was dropped" >&2; exit 1 ;;
           esac
+
+      # The daemon must not exit when its configuration is missing. Exiting puts
+      # the container into Docker's restart backoff, which reaches a minute --
+      # so the log goes stale exactly when the operator is fixing the problem,
+      # and a correct fix looks like it did nothing. That cost real confusion on
+      # the first deployment. Proved against the image because the entrypoint's
+      # bail-out is half of the behaviour.
+      - name: A daemon with no config waits, and starts when one appears
+        run: |
+          set -eu
+          work=$(mktemp -d)
+          mkdir -p "$work/config" "$work/temp" "$work/media"
+
+          cid=$(docker run -d -p 18080:8080 \
+            -v "$work/config":/config \
+            -v "$work/temp":/temp \
+            -v "$work/media":/media \
+            media-compressor:ci daemon)
+          trap 'docker rm -f "$cid" >/dev/null 2>&1 || true' EXIT
+
+          sleep 5
+          running=$(docker inspect -f '{{.State.Running}}' "$cid")
+          if [ "$running" != "true" ]; then
+            echo "the daemon exited instead of waiting for a config" >&2
+            docker logs "$cid" >&2
+            exit 1
+          fi
+
+          # 503, not "ok": unconfigured is not healthy, and a passing check here
+          # would report a working service that is encoding nothing.
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/healthz || true)
+          [ "$code" = "503" ] || { echo "healthz was $code, want 503 while unconfigured" >&2; exit 1; }
+
+          curl -s http://127.0.0.1:18080/ | grep -q "Waiting for a configuration" ||
+            { echo "the holding page did not say what was missing" >&2; exit 1; }
+
+          # The point of the whole thing: it picks the file up in place.
+          cp testdata/container-config.yaml "$work/config/config.yaml"
+          code=""
+          for _ in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/healthz || true)
+            [ "$code" = "200" ] && break
+            sleep 1
+          done
+          if [ "$code" != "200" ]; then
+            echo "healthz was $code; the config was never picked up" >&2
+            docker logs "$cid" >&2
+            exit 1
+          fi
+
+          restarts=$(docker inspect -f '{{.RestartCount}}' "$cid")
+          [ "$restarts" = "0" ] ||
+            { echo "it restarted $restarts times; it was meant to start in place" >&2; exit 1; }
+
+          echo "waited, then started in place with no restart"

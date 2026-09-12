@@ -788,6 +788,78 @@ matches the base branch. Loud beats silent.
 the Unraid stack follows. The release is created last, so it never names an
 image that is not yet in the registry.
 
+## Phase 8 — what the first real deployment found ✅ done
+
+Phase 7 shipped an image proven against a built container in CI. Running it on
+the actual Unraid box, against a test share of real files, found two things
+that no amount of local testing would have: both only appear on real media or
+under a real restart policy.
+
+The deployment itself worked. 17 files, 11 encoded and 6 left alone (4 already
+HEVC, 2 declined on the 3000 kbps floor), 3.5 GiB reclaimed, no failures,
+`hevc_vaapi` on the iGPU at roughly 5x real time, every replace verified. The
+EXDEV probe fired exactly as Phase 6 predicted and fell back to encoding beside
+the source.
+
+### Progress reporting was blank on every real file
+
+The daemon reported `0% (0.0x)` for the whole of every encode. The cause is not
+in this code: ffmpeg derives `out_time` from an aggregate over the output
+streams that carry timestamps, and attachment streams carry none — so any
+encode that maps attachments reports `out_time=N/A` for its entire run, and
+`speed` and `bitrate`, which are derived from it, go with it. Confirmed by
+running the same command with and without `-map -0:t`.
+
+Every anime file in the library has font attachments for its ASS subtitles, so
+this was every file that mattered. Dropping the attachments would fix the
+reporting and break the subtitles, so it is not an option.
+
+`frame=` and `fps=` keep working throughout. `readProgress` now takes the
+source frame rate and falls back to `frame ÷ fps` for elapsed time and
+`fps ÷ source_fps` for speed. The subtlety worth keeping: the raw values are
+held in locals rather than written into the emitted `Progress`, because writing
+a derived number into the struct would make the next block read it as
+"ffmpeg reported this" and freeze the display at the first value.
+
+While there: `speed=N/A` occurs mid-run as well as at the start, and parsing it
+unconditionally dropped the reading to zero for that block.
+
+### The daemon no longer exits because of its configuration
+
+The first start had no `config.yaml`, so the container exited 1 and
+`restart: unless-stopped` turned that into a loop — with Docker's exponential
+backoff, which reaches 60 seconds. The config was then written *21 seconds
+after* a failed attempt, so the next 40 seconds of log said the file was still
+missing. The reasonable conclusion from that is that the path is wrong, which
+is what happened; the file was moved somewhere worse, and the daemon that had
+by then started successfully was running on a config it no longer had a path
+to.
+
+The failure mode is general: exiting makes the feedback slowest exactly when
+the operator is acting on it. So `daemon` now waits. It serves a self-contained
+holding page naming the problem, re-checks every 3 seconds, and starts on its
+own when the configuration becomes usable — no restart, and no database opened
+or media touched while it waits. `/healthz` returns 503 throughout, so the
+container reads as unhealthy rather than as a healthy service doing nothing;
+Docker marks it and leaves it alone, which is right, because restarting would
+not help.
+
+"Usable" covers the parse, and also the mount check that Phase 4 made a
+refuse-to-start. Its reason — that a library whose mount is absent would have
+every file swept out of the database as deleted — is served better by waiting
+than by exiting, because waiting never opens the database. On a NAS the usual
+cause is a share that has not come up yet.
+
+One-shot commands are unchanged and still exit non-zero: `run`, `scan`, `plan`
+and `validate` are typed by hand and something reads their status. The
+entrypoint's own no-config bail-out is skipped only for `daemon`.
+
+A note for anyone doing the same thing elsewhere: `http.Server.Shutdown` only
+closes the listeners `Serve` has registered, and `Serve` registers from inside
+its goroutine — so shutting the holding page down can return with the port
+still held, and the real web UI binds that same port a moment later. The
+listener is kept and closed explicitly. A test pins it.
+
 ## Deferred, deliberately
 
 Revisit only once phases 1–6 are running in production:

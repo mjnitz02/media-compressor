@@ -82,6 +82,23 @@ func (r *Result) DurationSeconds() float64 {
 	return 0
 }
 
+// FrameRate is the main video stream's frame rate in frames per second, or 0
+// when there is no video stream or ffprobe reported none.
+//
+// It exists so that encode progress can be derived from ffmpeg's frame counter
+// when its out_time is unavailable -- which is what happens whenever
+// attachments are mapped. See internal/encode/progress.go.
+func (r *Result) FrameRate() float64 {
+	s, _, ok := r.MainVideo()
+	if !ok {
+		return 0
+	}
+	if f := parseRational(s.AvgFrameRate); f > 0 {
+		return f
+	}
+	return parseRational(s.RFrameRate)
+}
+
 // SizeBytes is the file size as ffprobe reported it.
 func (r *Result) SizeBytes() int64 {
 	n, err := strconv.ParseInt(strings.TrimSpace(r.Format.Size), 10, 64)
@@ -183,6 +200,21 @@ func (s *Stream) Title() string {
 // Forced reports the forced disposition, which is a reason to keep a subtitle
 // regardless of language.
 func (s *Stream) Forced() bool { return s.Disposition["forced"] == 1 }
+
+// parseRational parses the "numerator/denominator" form ffprobe uses for
+// frame rates ("24000/1001"). A plain number is accepted too, and the "0/0"
+// ffprobe gives for streams with no frame rate comes back as 0.
+func parseRational(s string) float64 {
+	num, den, ok := strings.Cut(strings.TrimSpace(s), "/")
+	if !ok {
+		return parseFloat(s)
+	}
+	d := parseFloat(den)
+	if d == 0 {
+		return 0
+	}
+	return parseFloat(num) / d
+}
 
 func parseFloat(s string) float64 {
 	f, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
