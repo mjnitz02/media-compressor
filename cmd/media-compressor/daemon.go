@@ -39,18 +39,36 @@ func runDaemon(args []string) error {
 		return err
 	}
 
-	cfg, err := config.Load(*cfgPath)
-	if err != nil {
-		return err
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	// The address the holding page uses if there turns out to be no config to
+	// read one from. The -listen flag wins over both.
+	waitAddr := config.DefaultListen
+	if *listen != "" {
+		waitAddr = *listen
 	}
-	if err := cfg.CheckPaths(); err != nil {
-		// Starting a long-running service pointed at mounts that are not
-		// there would mean sweeping every file out of the database as
-		// "deleted" -- so this one is worth refusing to start over.
-		return err
+	if *noWeb {
+		waitAddr = ""
 	}
-	if len(cfg.Libraries) == 0 {
-		return errors.New("no libraries are configured, so there is nothing to watch")
+
+	var cfg *config.Config
+	if *once {
+		// A single pass is a one-shot: it is run by hand or by a timer, and
+		// something is reading its exit status. Waiting would hang it.
+		var err error
+		if cfg, err = loadUsableConfig(*cfgPath); err != nil {
+			return err
+		}
+	} else {
+		var err error
+		if cfg, err = waitForConfig(ctx, *cfgPath, waitAddr, os.Stdout); err != nil {
+			if errors.Is(err, context.Canceled) {
+				fmt.Println("stopping")
+				return nil
+			}
+			return err
+		}
 	}
 
 	every := time.Duration(cfg.Scanner.IntervalMinutes) * time.Minute
@@ -66,9 +84,6 @@ func runDaemon(args []string) error {
 		return err
 	}
 	defer db.Close()
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 
 	opts := runner.Options{
 		Mode:         runner.ModeRun,

@@ -1,6 +1,7 @@
 package encode
 
 import (
+	"math"
 	"strings"
 	"testing"
 )
@@ -15,7 +16,7 @@ func TestReadProgressEmitsOneReportPerBlock(t *testing.T) {
 	}, "\n") + "\n"
 
 	var got []Progress
-	readProgress(strings.NewReader(stream), 16, func(p Progress) { got = append(got, p) })
+	readProgress(strings.NewReader(stream), 16, 0, func(p Progress) { got = append(got, p) })
 
 	if len(got) != 2 {
 		t.Fatalf("got %d reports, want 2: %+v", len(got), got)
@@ -35,7 +36,7 @@ func TestReadProgressEmitsOneReportPerBlock(t *testing.T) {
 // would report a progress bar a thousand times too slow.
 func TestReadProgressTreatsOutTimeMsAsMicroseconds(t *testing.T) {
 	var got Progress
-	readProgress(strings.NewReader("out_time_ms=30000000\nprogress=end\n"), 60, func(p Progress) { got = p })
+	readProgress(strings.NewReader("out_time_ms=30000000\nprogress=end\n"), 60, 0, func(p Progress) { got = p })
 	if got.Seconds != 30 {
 		t.Errorf("seconds = %v, want 30", got.Seconds)
 	}
@@ -45,7 +46,7 @@ func TestReadProgressTreatsOutTimeMsAsMicroseconds(t *testing.T) {
 // progress bar past 100% looks like a bug.
 func TestProgressFractionIsClamped(t *testing.T) {
 	var got Progress
-	readProgress(strings.NewReader("out_time_us=61000000\nprogress=end\n"), 60, func(p Progress) { got = p })
+	readProgress(strings.NewReader("out_time_us=61000000\nprogress=end\n"), 60, 0, func(p Progress) { got = p })
 	if got.Fraction != 1 {
 		t.Errorf("fraction = %v, want 1", got.Fraction)
 	}
@@ -55,7 +56,7 @@ func TestProgressFractionIsClamped(t *testing.T) {
 // a reason to stop reporting progress.
 func TestReadProgressSurvivesNotAvailableValues(t *testing.T) {
 	var got Progress
-	readProgress(strings.NewReader("fps=N/A\nspeed=N/A\nout_time_us=0\nprogress=continue\n"), 60, func(p Progress) { got = p })
+	readProgress(strings.NewReader("fps=N/A\nspeed=N/A\nout_time_us=0\nprogress=continue\n"), 60, 0, func(p Progress) { got = p })
 	if got.Speed != 0 || got.FPS != 0 {
 		t.Errorf("got %+v, want zeroed speed and fps", got)
 	}
@@ -63,12 +64,90 @@ func TestReadProgressSurvivesNotAvailableValues(t *testing.T) {
 
 func TestReadProgressWithAnUnknownDuration(t *testing.T) {
 	var got Progress
-	readProgress(strings.NewReader("out_time_us=4000000\nprogress=continue\n"), 0, func(p Progress) { got = p })
+	readProgress(strings.NewReader("out_time_us=4000000\nprogress=continue\n"), 0, 0, func(p Progress) { got = p })
 	if got.Fraction != 0 {
 		t.Errorf("fraction = %v; with no source duration there is no fraction to report", got.Fraction)
 	}
 	if got.Seconds != 4 {
 		t.Errorf("seconds = %v, want 4", got.Seconds)
+	}
+}
+
+// An encode that maps attachments -- `-map 0` over any file carrying subtitle
+// fonts -- gets out_time=N/A from ffmpeg for its whole run, because out_time is
+// an aggregate over the output streams that carry timestamps and attachment
+// streams carry none. speed and bitrate are derived from out_time and go with
+// it. This is a real capture from ffmpeg in the container image, encoding an
+// anime episode with 11 font attachments.
+//
+// Before the frame fallback this reported "0% (0.0x)" for two and a half
+// minutes per file, which is the whole of the visible progress.
+func TestReadProgressDerivesFromFramesWhenOutTimeIsUnavailable(t *testing.T) {
+	stream := strings.Join([]string{
+		"frame=236", "fps=67.41", "bitrate=N/A", "total_size=6029312",
+		"out_time_us=N/A", "out_time_ms=N/A", "out_time=N/A", "speed=N/A", "progress=continue",
+		"frame=480", "fps=60.80", "bitrate=N/A", "total_size=8846480",
+		"out_time_us=N/A", "out_time_ms=N/A", "out_time=N/A", "speed=N/A", "progress=continue",
+	}, "\n") + "\n"
+
+	var got []Progress
+	// 24 fps source, 120 s long.
+	readProgress(strings.NewReader(stream), 120, 24, func(p Progress) { got = append(got, p) })
+
+	if len(got) != 2 {
+		t.Fatalf("got %d reports, want 2", len(got))
+	}
+	// 236 frames at 24 fps is 9.83 s of output, and 9.83 of 120 is 8%.
+	if math.Abs(got[0].Seconds-9.8333) > 0.001 {
+		t.Errorf("seconds = %v, want ~9.83", got[0].Seconds)
+	}
+	if math.Abs(got[0].Fraction-0.08194) > 0.0001 {
+		t.Errorf("fraction = %v, want ~0.082", got[0].Fraction)
+	}
+	// Encoding at 67.41 fps a 24 fps source is 2.8x real time.
+	if math.Abs(got[0].Speed-2.8088) > 0.001 {
+		t.Errorf("speed = %v, want ~2.81", got[0].Speed)
+	}
+
+	// The second report must move. Deriving into the same field the fallback
+	// tests would freeze it here at the first block's value.
+	if got[1].Seconds <= got[0].Seconds {
+		t.Errorf("seconds went %v -> %v; progress must advance", got[0].Seconds, got[1].Seconds)
+	}
+	if math.Abs(got[1].Speed-2.5333) > 0.001 {
+		t.Errorf("speed = %v, want ~2.53 -- it should track the latest fps", got[1].Speed)
+	}
+}
+
+// The fallback is a fallback. When ffmpeg reports out_time and speed itself,
+// those are the numbers, and the frame count must not override them.
+func TestReadProgressPrefersFFmpegsOwnNumbers(t *testing.T) {
+	stream := "frame=240\nfps=48.0\nout_time_us=4000000\nspeed=1.83x\nprogress=continue\n"
+
+	var got Progress
+	readProgress(strings.NewReader(stream), 16, 24, func(p Progress) { got = p })
+
+	if got.Seconds != 4 {
+		t.Errorf("seconds = %v, want 4 from out_time -- not 10 from the frame count", got.Seconds)
+	}
+	if got.Speed != 1.83 {
+		t.Errorf("speed = %v, want 1.83 as reported", got.Speed)
+	}
+}
+
+// speed=N/A turns up mid-run, not only before the first frame. Parsing it into
+// the field unconditionally dropped the reading to zero for that block.
+func TestReadProgressKeepsTheLastReportedSpeedThroughANotAvailable(t *testing.T) {
+	stream := strings.Join([]string{
+		"out_time_us=4000000", "speed=1.83x", "progress=continue",
+		"out_time_us=5000000", "speed=N/A", "progress=continue",
+	}, "\n") + "\n"
+
+	var got []Progress
+	readProgress(strings.NewReader(stream), 60, 0, func(p Progress) { got = append(got, p) })
+
+	if got[1].Speed != 1.83 {
+		t.Errorf("speed = %v, want the last reported 1.83 rather than a zero", got[1].Speed)
 	}
 }
 

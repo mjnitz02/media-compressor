@@ -2,6 +2,7 @@ package probe
 
 import (
 	"encoding/json"
+	"math"
 	"testing"
 )
 
@@ -126,6 +127,44 @@ func TestDurationFallsBackToStream(t *testing.T) {
 	}
 	if got := r.DurationSeconds(); got != 42.5 {
 		t.Errorf("DurationSeconds() = %v, want 42.5 from the stream", got)
+	}
+}
+
+// ffprobe reports frame rates as rationals, and NTSC rates are only exact in
+// that form: 24000/1001 is 23.976..., which no decimal literal spells.
+func TestFrameRate(t *testing.T) {
+	cases := []struct {
+		name string
+		avg  string
+		r    string
+		want float64
+	}{
+		{"ntsc rational", "24000/1001", "24000/1001", 24000.0 / 1001.0},
+		{"whole rational", "25/1", "25/1", 25},
+		{"plain decimal", "29.97", "", 29.97},
+		{"falls back to r_frame_rate", "0/0", "24/1", 24},
+		{"none at all", "0/0", "0/0", 0},
+		{"malformed", "not/a/rate", "", 0},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			r := &Result{
+				Path:    "x.mkv",
+				Streams: []Stream{{CodecType: TypeVideo, AvgFrameRate: c.avg, RFrameRate: c.r}},
+			}
+			if got := r.FrameRate(); math.Abs(got-c.want) > 1e-9 {
+				t.Errorf("FrameRate() = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+// Progress derivation asks for a frame rate on every encode, including the
+// audio-only files the scanner can hand it.
+func TestFrameRateWithNoVideoStream(t *testing.T) {
+	r := &Result{Path: "x.mka", Streams: []Stream{{CodecType: TypeAudio}}}
+	if got := r.FrameRate(); got != 0 {
+		t.Errorf("FrameRate() = %v, want 0", got)
 	}
 }
 

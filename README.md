@@ -188,12 +188,22 @@ There is a [`docker-compose.yml`](docker-compose.yml) to start from, and an
 Unraid Community Applications template in
 [`unraid/`](unraid/media-compressor.xml).
 
-**The first start writes `config.example.yaml` into `/config` and stops**,
-because there is nothing safe to do before being told which folders to look
-at. Copy it to `config.yaml`, point its libraries at the paths you mounted,
-and start it again. The example is rewritten on every start, so after an
-upgrade the file beside your config always documents the schema the running
-binary understands.
+**The first start writes `config.example.yaml` into `/config` and then waits**,
+because there is nothing safe to do before being told which folders to look at.
+Copy it to `config.yaml` and point its libraries at the paths you mounted; the
+daemon picks it up within a few seconds and starts on its own, with no restart.
+Until then it serves a page saying what is missing, and `/healthz` returns 503
+so the container reads as unhealthy rather than as a working service that
+happens to be encoding nothing.
+
+It waits rather than exiting because Docker restarts a container that exits
+with a backoff that reaches a minute, which means the moment you fix the
+problem is the moment the log is most out of date — you would be reading a
+failure recorded before your change. One-shot commands (`run`, `scan`, `plan`,
+`validate`) still exit non-zero straight away; those are typed by hand.
+
+The example is rewritten on every start, so after an upgrade the file beside
+your config always documents the schema the running binary understands.
 
 The image is `debian:bookworm-slim` plus
 [jellyfin-ffmpeg](https://github.com/jellyfin/jellyfin-ffmpeg), pinned by
