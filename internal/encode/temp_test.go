@@ -83,8 +83,10 @@ func TestTempNamesDoNotCollideAcrossDirectories(t *testing.T) {
 // by a failure can be found from the source path alone.
 func TestTempNamesAreStable(t *testing.T) {
 	src := "/mnt/media_video/movies/Film.mkv"
-	if tempName(src, ".mkv") != tempName(src, ".mkv") {
-		t.Error("temp names should be deterministic")
+	first := tempName(src, ".mkv")
+	second := tempName(src, ".mkv")
+	if first != second {
+		t.Errorf("temp names should be deterministic, got %q then %q", first, second)
 	}
 }
 

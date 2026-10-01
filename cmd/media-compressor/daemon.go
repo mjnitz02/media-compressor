@@ -125,7 +125,8 @@ func runDaemon(args []string) error {
 				"the daemon is running without it\n", err)
 		} else {
 			fmt.Printf("web UI on http://%s\n", addr)
-			defer shutdownWeb(srv)
+			// The process is on its way out; a failed shutdown has nowhere to go.
+			defer func() { _ = shutdownWeb(srv) }()
 		}
 	}
 

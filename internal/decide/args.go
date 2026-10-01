@@ -39,16 +39,6 @@ func (a *argList) remove(tokens ...string) bool {
 	return false
 }
 
-// has reports whether an entry matching tokens is already present.
-func (a *argList) has(tokens ...string) bool {
-	for _, e := range a.entries {
-		if equalTokens(e, tokens) {
-			return true
-		}
-	}
-	return false
-}
-
 // flat returns the arguments as a single token slice, ready for os/exec.
 func (a *argList) flat() []string {
 	var out []string
