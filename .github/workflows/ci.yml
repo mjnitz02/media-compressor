@@ -41,7 +41,10 @@ jobs:
       # The encoder's and runner's tests work on clips they generate with
       # testsrc, so without ffmpeg they quietly skip themselves and the
       # interesting half of the suite does not run.
+      # A wedged apt on the runner should cost five minutes and name itself,
+      # not eat the job's whole budget and report as a vague job timeout.
       - name: Install ffmpeg
+        timeout-minutes: 5
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends ffmpeg

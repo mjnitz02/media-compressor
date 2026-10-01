@@ -96,6 +96,7 @@ jobs:
       # one build nobody gets to re-do, so they run again here.
       - name: Install ffmpeg
         if: steps.plan.outputs.release == 'true'
+        timeout-minutes: 5
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
 
       - name: go test
