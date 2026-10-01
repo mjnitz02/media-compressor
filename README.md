@@ -285,6 +285,7 @@ the next release cannot go below.
 | [docs/tdarr-analysis.md](docs/tdarr-analysis.md) | Forensics on the Tdarr stack being replaced, and why its output looks good |
 | [docs/libraries.md](docs/libraries.md) | The real-world library layout and the constraints it imposes |
 | [docs/plan.md](docs/plan.md) | Phased build plan |
+| [docs/ui-redesign.md](docs/ui-redesign.md) | Why the status pages are being reshaped for 40,000 files, and into what |
 | [testdata/README.md](testdata/README.md) | The golden decision corpus and how it was made |
 | [config.example.yaml](config.example.yaml) | The configuration schema, and a working config to start from |
 | [docker-compose.yml](docker-compose.yml) | A working compose file, with the mounts explained |
