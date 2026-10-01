@@ -788,6 +788,28 @@ matches the base branch. Loud beats silent.
 the Unraid stack follows. The release is created last, so it never names an
 image that is not yet in the registry.
 
+#### Reversed: back to tag-derived, with VERSION as the floor
+
+The automatic bump above turned out to be incompatible with unattended
+Dependabot merging, which is what the repo wanted next. The bump workflow
+pushes a commit to the pull request branch; on a Dependabot branch that commit
+is made by `github-actions[bot]`, and Dependabot responds by abandoning the PR
+or rebasing the bump away. Exempting Dependabot from the bump then re-creates
+the exact failure the bump existed to prevent — a merge that publishes nothing
+while reporting success.
+
+So the version is worked out at release time again, from `git tag`, the way the
+other two repos on this box do it. What is kept from the idea above is the part
+that was actually valuable: `VERSION` survives as the *floor*, so a deliberate
+minor or major is still reviewable in the pull request that asks for it, while a
+patch needs no ceremony. `pull-request-version.yml` and CI's `version` job are
+gone.
+
+The release workflow also gained a daily `schedule:`, because a merge performed
+with a workflow's `GITHUB_TOKEN` — which is how every auto-merged Dependabot PR
+lands — does not fire `push`. Without the sweep, dependency updates would reach
+`main` and never be published.
+
 ## Phase 8 — what the first real deployment found ✅ done
 
 Phase 7 shipped an image proven against a built container in CI. Running it on

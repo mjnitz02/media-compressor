@@ -266,11 +266,17 @@ Requires Go 1.27+ and ffmpeg. No node, and no frontend build step: the pages
 are `html/template`, one stylesheet and one vendored copy of HTMX, all compiled
 into the binary.
 
-Every push runs gofmt, `go vet` and `go test -race`, and builds the image and
-checks that `hevc_vaapi` and `hevc_qsv` are in it. A `v*` tag publishes the
-image to GHCR and attaches the bare linux/amd64 binary to the GitHub release,
-since the program is one static file that needs nothing but an ffmpeg on
-`PATH`.
+Every pull request runs four required checks: `go test -race` (with gofmt and
+`go vet`), `golangci-lint`, a gitleaks scan of the full history, and a build of
+the image that proves `hevc_vaapi` and `hevc_qsv` are in it and that the
+PUID/PGID drop works. CodeQL analyses the Go and the workflows alongside them.
+
+A merge to `main` publishes the image to GHCR and attaches the bare
+linux/amd64 binary to the GitHub release, since the program is one static file
+that needs nothing but an ffmpeg on `PATH`. The version is the next patch after
+the newest `v*` tag — nothing in a pull request has to bump anything. To cut a
+minor or a major instead, raise `VERSION` in the pull request: it is the floor
+the next release cannot go below.
 
 ## Documentation
 

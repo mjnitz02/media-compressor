@@ -1,0 +1,17 @@
+# gitleaks config — extends the built-in default ruleset.
+# https://github.com/gitleaks/gitleaks#configuration
+title = "media-compressor gitleaks config"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Generated, vendored, or binary paths — scanning them wastes time and produces false positives on compressed bytes and module checksums."
+paths = [
+  '''(^|/)go\.sum$''',
+  '''\.png$''',
+  '''\.jpg$''',
+  '''\.jpeg$''',
+  '''\.ico$''',
+  '''\.gz$''',
+]

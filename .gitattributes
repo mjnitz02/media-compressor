@@ -1,0 +1,32 @@
+# Normalize line endings on checkin; check out with LF everywhere.
+* text=auto eol=lf
+
+# Generated. Suppress from diffs and from language stats so a dependency bump
+# doesn't bury the real change in a review.
+go.sum  -diff linguist-generated
+
+# Shell scripts and Dockerfiles break with CRLF.
+*.sh        text eol=lf
+Dockerfile  text eol=lf
+
+# Read by the release workflow with `tr -d '[:space:]'`, so a CRLF would not
+# actually break it — but it is a single token on a single line and should stay
+# that way.
+VERSION  text eol=lf
+
+# The golden decision corpus: 1,881 real (probe -> decision) fixtures, gzipped.
+# Never diff it, never eol-convert it, and keep it out of language stats.
+testdata/tdarr_decisions.jsonl.gz  binary linguist-generated
+
+# The one vendored dependency, and the whole of the frontend's JavaScript.
+# Marking it vendored keeps GitHub's language stats reporting this as the Go
+# repo it is, and keeps a 40 KB minified line out of diffs.
+internal/web/static/htmx.min.js  -diff linguist-vendored
+
+# Binary assets.
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.ico   binary
+*.gz    binary
+*.zip   binary
