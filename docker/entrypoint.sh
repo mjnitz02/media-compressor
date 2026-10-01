@@ -100,7 +100,12 @@ if [ -n "${UMASK:-}" ]; then
     umask "$UMASK"
 fi
 
-if [ ! -f "$CONFIG" ]; then
+# The daemon is exempt: it waits for a configuration and serves a page saying
+# what is missing, rather than exiting. Exiting here put the container into
+# Docker's restart backoff, which reaches a minute -- so the log kept repeating
+# a failure recorded before the operator's fix and made a correct fix look
+# wrong. Every other command is typed by hand and should fail now.
+if [ "${1:-}" != "daemon" ] && [ ! -f "$CONFIG" ]; then
     cat >&2 <<MSG
 media-compressor: no configuration at $CONFIG
 

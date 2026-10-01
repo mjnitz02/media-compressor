@@ -1,7 +1,13 @@
-# Every push and pull request: the tests, and the image that ships them.
+---
+# Every push and pull request: the checks that gate a merge to main.
 #
-# The image is built here as well as on a tag because a broken Dockerfile
-# found at release time is found at the worst possible moment.
+# `test`, `lint`, `secrets` and `image` are the four required checks on the
+# `main` ruleset, which is also what Dependabot auto-merge waits on. Anything
+# added here that should block a merge has to be added to that ruleset too --
+# a job that is merely present is not a gate.
+#
+# The image is built here as well as at release time because a broken
+# Dockerfile found at release time is found at the worst possible moment.
 name: CI
 
 on:
@@ -13,13 +19,21 @@ on:
 permissions:
   contents: read
 
+# A force-push or a quick second push should not leave two full runs racing;
+# the image job in particular is several minutes of container work.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref
+    }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
           go-version-file: go.mod
           cache: true
@@ -50,50 +64,55 @@ jobs:
       - name: go test
         run: go test -race ./...
 
-  version:
-    name: VERSION was bumped
+  # Separate from `test` so a lint failure and a test failure are
+  # distinguishable at a glance in the checks list, and so a slow lint run
+  # never delays the test result.
+  lint:
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      # release-on-merge.yml publishes whatever VERSION names and skips
-      # silently if that release already exists. So a PR that lands without a
-      # bump does not fail loudly at release time -- it succeeds while shipping
-      # nothing, which is the worse outcome. Catch it here instead.
-      #
-      # pull-request-version.yml normally does the bump automatically; this job
-      # is red only in the window before that push lands, or if it was skipped.
-      - name: Compare against the base branch
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a  # v9.3.0
+        with:
+          version: v2.14.0
+
+  secrets:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0  # gitleaks scans history, not just the working tree
+
+      - name: Install gitleaks
+        env:
+          GITLEAKS_VERSION: 8.30.1
         run: |
-          # A pull request that introduces VERSION has nothing to compare
-          # against, and is by definition a new version.
-          if ! base=$(git show "origin/${{ github.base_ref }}:VERSION" 2>/dev/null); then
-            echo "No VERSION on ${{ github.base_ref }} yet -- this PR introduces it."
-            exit 0
-          fi
-          base=$(printf '%s' "$base" | tr -d '[:space:]')
-          head=$(tr -d '[:space:]' < VERSION)
-          echo "base: $base"
-          echo "head: $head"
-          if [ "$base" = "$head" ]; then
-            echo "VERSION is still $base -- a merge would publish nothing." >&2
-            echo "pull-request-version.yml bumps this automatically; if it did not," >&2
-            echo "edit VERSION yourself." >&2
-            exit 1
-          fi
+          set -euo pipefail
+          curl -fsSL -o /tmp/gitleaks.tar.gz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          sudo tar -xzf /tmp/gitleaks.tar.gz -C /usr/local/bin gitleaks
+          gitleaks version
+
+      - name: Scan for leaked secrets
+        run: gitleaks detect --config .gitleaks.toml --redact --no-banner -v
 
   image:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      - uses: docker/setup-buildx-action@v4
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4.4.1
 
       - name: Build the image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7.4.0
         with:
           context: .
           platforms: linux/amd64
@@ -190,3 +209,58 @@ jobs:
           case " $groups " in
             *" 44 "*) ;; *) echo "gid 44 was dropped" >&2; exit 1 ;;
           esac
+
+      # The daemon must not exit when its configuration is missing. Exiting puts
+      # the container into Docker's restart backoff, which reaches a minute --
+      # so the log goes stale exactly when the operator is fixing the problem,
+      # and a correct fix looks like it did nothing. That cost real confusion on
+      # the first deployment. Proved against the image because the entrypoint's
+      # bail-out is half of the behaviour.
+      - name: A daemon with no config waits, and starts when one appears
+        run: |
+          set -eu
+          work=$(mktemp -d)
+          mkdir -p "$work/config" "$work/temp" "$work/media"
+
+          cid=$(docker run -d -p 18080:8080 \
+            -v "$work/config":/config \
+            -v "$work/temp":/temp \
+            -v "$work/media":/media \
+            media-compressor:ci daemon)
+          trap 'docker rm -f "$cid" >/dev/null 2>&1 || true' EXIT
+
+          sleep 5
+          running=$(docker inspect -f '{{.State.Running}}' "$cid")
+          if [ "$running" != "true" ]; then
+            echo "the daemon exited instead of waiting for a config" >&2
+            docker logs "$cid" >&2
+            exit 1
+          fi
+
+          # 503, not "ok": unconfigured is not healthy, and a passing check here
+          # would report a working service that is encoding nothing.
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/healthz || true)
+          [ "$code" = "503" ] || { echo "healthz was $code, want 503 while unconfigured" >&2; exit 1; }
+
+          curl -s http://127.0.0.1:18080/ | grep -q "Waiting for a configuration" ||
+            { echo "the holding page did not say what was missing" >&2; exit 1; }
+
+          # The point of the whole thing: it picks the file up in place.
+          cp testdata/container-config.yaml "$work/config/config.yaml"
+          code=""
+          for _ in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/healthz || true)
+            [ "$code" = "200" ] && break
+            sleep 1
+          done
+          if [ "$code" != "200" ]; then
+            echo "healthz was $code; the config was never picked up" >&2
+            docker logs "$cid" >&2
+            exit 1
+          fi
+
+          restarts=$(docker inspect -f '{{.RestartCount}}' "$cid")
+          [ "$restarts" = "0" ] ||
+            { echo "it restarted $restarts times; it was meant to start in place" >&2; exit 1; }
+
+          echo "waited, then started in place with no restart"

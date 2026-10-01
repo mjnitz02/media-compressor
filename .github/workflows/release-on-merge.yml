@@ -1,11 +1,18 @@
-# On a merge to main: cut the GitHub release named by VERSION, publish the
-# image to GHCR, and attach the bare binary to the release.
+---
+# Release whatever is at the tip of main: cut the GitHub release, publish the
+# image to GHCR, and attach the bare binary.
 #
-# Release is driven by the VERSION file rather than by pushing a tag, so that
-# the version a merge publishes is reviewable in the pull request that changes
-# it. pull-request-version.yml bumps the patch automatically, and CI fails a PR
-# that lands on main without a bump -- otherwise this job would find the release
-# already there and quietly publish nothing.
+# Nothing in a pull request has to bump a version. The number is worked out
+# here from the existing git tags, and the tag is created by the release at the
+# end of the run. VERSION is the floor, not the source of truth: raise it in a
+# pull request to make the next release a minor or a major, and otherwise leave
+# it alone and get a patch.
+#
+# That split is what lets Dependabot auto-merge work at all. The previous
+# scheme had a workflow push a VERSION bump onto every PR branch; on a
+# Dependabot branch that bot commit makes Dependabot abandon or rebase away the
+# PR, and a PR that landed without a bump published nothing at all while
+# reporting success.
 #
 # The binary is published as well as the image because it is the whole program:
 # one static file that needs nothing but an ffmpeg on PATH, and somebody running
@@ -15,66 +22,91 @@ name: Release on merge to main
 on:
   push:
     branches: [main]
+  schedule:
+    # Daily, 07:07 UTC. A merge performed with a workflow's GITHUB_TOKEN does
+    # not fire `push` workflows, and that is exactly how Dependabot PRs land
+    # (see dependabot-automerge.yml). This sweep picks those up. When the tip
+    # of main is already released it does nothing.
+    - cron: 7 7 * * *
   workflow_dispatch:
 
-# Only what this workflow needs: contents:write to cut the release, and
-# packages:write to push to GHCR. Both are covered by the workflow's own
+# Only what this workflow needs: contents:write to cut the release and its tag,
+# and packages:write to push to GHCR. Both are covered by the workflow's own
 # GITHUB_TOKEN, so no registry credentials are stored in the repo.
 permissions:
   contents: write
   packages: write
 
+# One release at a time, so two merges in quick succession cannot both claim
+# the same version number.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
   release:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          # Always the current tip of main rather than the commit that
+          # triggered the run, so a queued run never releases a stale commit.
+          ref: main
+          fetch-depth: 0  # all tags, to find the latest release
 
-      - uses: actions/setup-go@v5
+      - name: Work out the next version
+        id: plan
+        run: |
+          set -eu
+          if [ -n "$(git tag --points-at HEAD --list 'v*')" ]; then
+            echo "$(git rev-parse --short HEAD) is already released. Nothing to do."
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Next patch after the newest release tag...
+          LATEST=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n1)
+          NEXT=""
+          if [ -n "$LATEST" ]; then
+            IFS='.' read -r MAJOR MINOR PATCH <<< "${LATEST#v}"
+            NEXT="${MAJOR}.${MINOR}.$((PATCH + 1))"
+          fi
+
+          # ...unless VERSION asks for something higher, which is how a minor or
+          # major release is made.
+          FLOOR=$(tr -d '[:space:]' < VERSION)
+          case "$FLOOR" in
+            [0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "VERSION is '$FLOOR', which is not x.y.z" >&2; exit 1 ;;
+          esac
+          VERSION=$(printf '%s\n' "$NEXT" "$FLOOR" | sort -V | tail -n1)
+          echo "Latest release: ${LATEST:-none}, VERSION floor: $FLOOR, releasing: $VERSION"
+          echo "release=true" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        if: steps.plan.outputs.release == 'true'
         with:
           go-version-file: go.mod
           cache: true
 
-      - name: Read VERSION
-        id: version
-        run: |
-          v=$(tr -d '[:space:]' < VERSION)
-          case "$v" in
-            [0-9]*.[0-9]*.[0-9]*) ;;
-            *) echo "VERSION is $v, which is not x.y.z" >&2; exit 1 ;;
-          esac
-          echo "value=$v" >> "$GITHUB_OUTPUT"
-          echo "Releasing $v"
-
-      # A re-run, or a merge that changed nothing but docs, must not try to
-      # publish over a release that already exists.
-      - name: Has this version already shipped?
-        id: check
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          if gh release view "v${{ steps.version.outputs.value }}" --json tagName >/dev/null 2>&1; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "v${{ steps.version.outputs.value }} is already released -- nothing to do"
-          else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-          fi
-
       # The tests have already run on this commit via CI, but a release is the
       # one build nobody gets to re-do, so they run again here.
       - name: Install ffmpeg
-        if: steps.check.outputs.exists == 'false'
+        if: steps.plan.outputs.release == 'true'
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
 
       - name: go test
-        if: steps.check.outputs.exists == 'false'
+        if: steps.plan.outputs.release == 'true'
         run: go test -race ./...
 
-      - uses: docker/setup-buildx-action@v4
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
         if: steps.check.outputs.exists == 'false'
 
-      - uses: docker/login-action@v3
-        if: steps.check.outputs.exists == 'false'
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4.6.0
+        if: steps.plan.outputs.release == 'true'
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -84,55 +116,64 @@ jobs:
       # latest=auto, which tags the highest semver build as latest. That is the
       # tag the Unraid compose stack follows.
       - name: Docker tags and labels
-        if: steps.check.outputs.exists == 'false'
+        if: steps.plan.outputs.release == 'true'
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302  # v6.2.0
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
-            type=semver,pattern={{version}},value=v${{ steps.version.outputs.value }}
-            type=semver,pattern={{major}}.{{minor}},value=v${{ steps.version.outputs.value }}
-            type=semver,pattern={{major}},value=v${{ steps.version.outputs.value }}
+            type=semver,pattern={{version}},value=v${{ steps.plan.outputs.version }}
+            type=semver,pattern={{major}}.{{minor}},value=v${{ steps.plan.outputs.version }}
+            type=semver,pattern={{major}},value=v${{ steps.plan.outputs.version }}
+          # The revision is spelled out rather than left to the action's
+          # default, which reads the commit that triggered the run. On the
+          # scheduled sweep that is not the commit checked out above.
           labels: |
             org.opencontainers.image.title=media-compressor
             org.opencontainers.image.description=Keeps a media library encoded as HEVC in MKV, without the junk tracks
-            org.opencontainers.image.version=${{ steps.version.outputs.value }}
+            org.opencontainers.image.version=${{ steps.plan.outputs.version }}
+            org.opencontainers.image.revision=${{ steps.plan.outputs.sha }}
 
       # linux/amd64 only, deliberately. The encoders this exists to drive are
       # Intel QSV and VAAPI; an arm64 image would imply hardware transcoding it
       # cannot do. The Dockerfile refuses any other architecture outright.
       - name: Build and push
-        if: steps.check.outputs.exists == 'false'
-        uses: docker/build-push-action@v6
+        if: steps.plan.outputs.release == 'true'
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7.4.0
         with:
           context: .
           platforms: linux/amd64
           push: true
           build-args: |
-            VERSION=${{ steps.version.outputs.value }}
+            VERSION=${{ steps.plan.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
       - name: Build the bare binary
-        if: steps.check.outputs.exists == 'false'
+        if: steps.plan.outputs.release == 'true'
+        env:
+          VERSION: ${{ steps.plan.outputs.version }}
         run: |
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
-            -ldflags "-s -w -X main.version=${{ steps.version.outputs.value }}" \
+            -ldflags "-s -w -X main.version=${VERSION}" \
             -o media-compressor-linux-amd64 ./cmd/media-compressor
           sha256sum media-compressor-linux-amd64 > media-compressor-linux-amd64.sha256
 
       # Last, so that a release only appears once the image it names is actually
-      # in the registry. The tag is created here from the merge commit.
+      # in the registry. The tag is created here, and it is the tag that marks a
+      # commit as released -- if the build fails, the next run tries again.
       - name: Create the release
-        if: steps.check.outputs.exists == 'false'
+        if: steps.plan.outputs.release == 'true'
         env:
+          VERSION: ${{ steps.plan.outputs.version }}
+          SHA: ${{ steps.plan.outputs.sha }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "v${{ steps.version.outputs.value }}" \
-            --target "$GITHUB_SHA" \
-            --title "${{ steps.version.outputs.value }}" \
+          gh release create "v$VERSION" \
+            --target "$SHA" \
+            --title "$VERSION" \
             --generate-notes \
             media-compressor-linux-amd64 \
             media-compressor-linux-amd64.sha256 \

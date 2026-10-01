@@ -335,7 +335,7 @@ func (e Encoder) runFFmpeg(ctx context.Context, job *Job, res *Result) error {
 	}
 
 	// Read to EOF before Wait, which is what StdoutPipe requires.
-	readProgress(stdout, job.Source.DurationSeconds(), func(p Progress) {
+	readProgress(stdout, job.Source.DurationSeconds(), job.Source.FrameRate(), func(p Progress) {
 		res.LastProgress = p
 		if e.OnProgress != nil {
 			e.OnProgress(p)
