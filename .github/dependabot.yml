@@ -1,36 +1,72 @@
+---
+# Dependabot version updates.
+# https://docs.github.com/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
+#
+# The aim is one pull request a week that nobody has to touch: the two
+# ecosystems below share a multi-ecosystem group, so their updates arrive
+# together, and dependabot-automerge.yml merges that PR once the required
+# checks pass. release-on-merge.yml then publishes a new version.
+#
+# Security updates can't join that group (multi-ecosystem groups are
+# version-updates only) and otherwise open one PR per vulnerable package. The
+# `applies-to: security-updates` group on each entry folds them into one PR per
+# ecosystem, and those auto-merge too.
 version: 2
+
+multi-ecosystem-groups:
+  dependencies:
+    schedule:
+      interval: weekly
+
 updates:
-  # 1. Go Modules Configuration
-  - package-ecosystem: "gomod"
-    directory: "/"
-    schedule:
-      interval: "weekly"
-      day: "monday"             # Run every Monday
-      time: "09:00"             # Run at 9:00 AM UTC
-      timezone: "America/New_York"
-
-    # Set the maximum number of open version update PRs at any time
-    open-pull-requests-limit: 5
-
-    # Automatically assign labels to the created PRs
-    labels:
-      - "dependencies"
-      - "go"
-
-    # Group related dependencies to avoid PR fatigue
+  # Go modules. The dependency budget here is deliberately tiny -- a YAML
+  # parser and a SQLite driver -- so this is a handful of bumps a month.
+  - package-ecosystem: gomod
+    directory: /
+    # `patterns` is required on every member of a multi-ecosystem group.
+    patterns: ['*']
+    multi-ecosystem-group: dependencies
+    # Nobody reviews these PRs before they merge, so wait a week after a
+    # release: time for a compromised or broken version to be yanked upstream.
+    # Security updates ignore the cooldown.
+    cooldown:
+      default-days: 7
     groups:
-      # Combine all golang.org/x/* package updates into one PR
-      golang-x-packages:
-        patterns:
-          - "golang.org/x/*"
-      # Combine all AWS SDK updates into one PR
-      aws-sdk-go:
-        patterns:
-          - "://github.com*"
+      gomod-security:
+        applies-to: security-updates
+        patterns: ['*']
+    ignore:
+      # The `go` directive in go.mod, which dependabot bumps as if it were a
+      # dependency. It has to move in lockstep with the `golang:` builder tag
+      # in the Dockerfile, and raising it alone produces an image that cannot
+      # build the program it is building. Move the two by hand, together.
+      - dependency-name: go
+        update-types:
+          - version-update:semver-major
+          - version-update:semver-minor
 
-  # 2. GitHub Actions Configuration (Optional but recommended)
-  # Keeps your CI/CD workflow dependencies up-to-date
-  - package-ecosystem: "github-actions"
-    directory: "/"
+  - package-ecosystem: github-actions
+    directory: /
+    patterns: ['*']
+    multi-ecosystem-group: dependencies
+    cooldown:
+      default-days: 7
+    groups:
+      github-actions-security:
+        applies-to: security-updates
+        patterns: ['*']
+
+  # Base images in the published container: the `golang:` builder and the
+  # `debian:` runtime.
+  #
+  # Deliberately outside the group and NOT auto-merged. The tags are
+  # `1.27-bookworm` and `bookworm-slim`, so an update here is a new Go
+  # toolchain or a new Debian release rather than a patch. The golang tag is
+  # also half of the pin-pair described above -- bumping it without go.mod
+  # breaks the build outright. These stay a hand-merged PR, a few times a year.
+  - package-ecosystem: docker
+    directory: /
     schedule:
-      interval: "monthly"
+      interval: weekly
+    cooldown:
+      default-days: 7

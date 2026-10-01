@@ -141,9 +141,9 @@ func TestAGrowingFileNeverSettles(t *testing.T) {
 
 func TestARecentlyWrittenFileIsNotSettled(t *testing.T) {
 	s := open(t)
-	states := observe(t, s, t0, sight("/m/a.mkv", 10, t0.Add(-time.Minute)))
+	observe(t, s, t0, sight("/m/a.mkv", 10, t0.Add(-time.Minute)))
 	observe(t, s, t0.Add(2*hour), sight("/m/a.mkv", 10, t0.Add(-time.Minute)))
-	states = observe(t, s, t0.Add(4*hour), sight("/m/a.mkv", 10, t0.Add(-time.Minute)))
+	states := observe(t, s, t0.Add(4*hour), sight("/m/a.mkv", 10, t0.Add(-time.Minute)))
 
 	if ok, _ := states["/m/a.mkv"].Settled(8*hour, t0.Add(4*hour)); ok {
 		t.Error("a file younger than the grace period must not be settled")

@@ -1,0 +1,67 @@
+---
+name: CodeQL
+# Go needs a real build to analyze, so this is the one scan here that is not
+# free. It still runs on every PR: the whole program is a few thousand lines
+# and the build is already cached by the other jobs.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Mondays, 10:47 UTC. Offset from the other repos' 10:17 so the weekly runs
+    # don't all queue at once. The schedule matters even with PR runs: it
+    # re-analyzes existing code against newly published queries.
+    - cron: 47 10 * * 1
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref
+    }}
+  cancel-in-progress: true
+jobs:
+  analyze:
+    name: Analyze ${{ matrix.language }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      # Uploading results to the Security tab needs write here; everything
+      # else stays read-only.
+      security-events: write
+      actions: read
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: go
+            build-mode: autobuild
+          # .github/workflows/*.yml -- script injection, missing permissions
+          # blocks, unpinned actions and the like. Without this entry the
+          # alerts already filed under /language:actions are never re-analyzed,
+          # so they stay open after the workflow they point at is fixed.
+          - language: actions
+            build-mode: none
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      # Before init, so autobuild compiles with the toolchain go.mod asks for
+      # rather than whatever the runner image happens to ship. A mismatch here
+      # fails the build and CodeQL reports it as "no source code seen", which
+      # looks like a configuration problem rather than a version one.
+      - if: matrix.language == 'go'
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2  # v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2  # v4
+        with:
+          category: /language:${{ matrix.language }}

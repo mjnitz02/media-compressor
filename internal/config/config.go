@@ -133,6 +133,11 @@ type rawLibrary struct {
 	Paths      []string `yaml:"paths"`
 }
 
+// DefaultListen is where the web UI goes when server.listen says nothing. It
+// is named because the daemon needs an address before it has a config to read
+// one from -- see waitForConfig.
+const DefaultListen = ":8080"
+
 // Load reads and parses a config file.
 //
 // It does not touch the media paths; that is CheckPaths, kept separate so
@@ -207,7 +212,7 @@ func applyBuiltinDefaults(c *Config) {
 		c.Defaults.Workers.Encode = 1
 	}
 	if c.Server.Listen == "" {
-		c.Server.Listen = ":8080"
+		c.Server.Listen = DefaultListen
 	}
 	if c.Scanner.IntervalMinutes == 0 {
 		c.Scanner.IntervalMinutes = 180

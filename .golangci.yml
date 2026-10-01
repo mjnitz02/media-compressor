@@ -1,0 +1,74 @@
+---
+# golangci-lint configuration. Run by the `lint` job in ci.yml, which is a
+# required check on main.
+#
+# The `standard` set is errcheck, govet, ineffassign, staticcheck and unused --
+# the ones that find real defects rather than matters of taste. That suits a
+# codebase whose author is new to Go: a red run here should mean something is
+# actually wrong, not that a reviewer's preference went unmet.
+version: "2"
+
+linters:
+  default: standard
+
+  settings:
+    errcheck:
+      # Every call below was looked at individually when this gate was added,
+      # and in each case ignoring the error is the correct thing to do -- so
+      # leaving them flagged would mean 23 permanent warnings, which is how a
+      # lint gate stops being read at all.
+      #
+      # The deferred cleanup: a Close or Rollback that fails after the real
+      # work has already succeeded or already failed has nothing to report to,
+      # and the sql driver's Rollback-after-Commit is a documented no-op.
+      exclude-functions:
+        - (*database/sql.Rows).Close
+        - (*database/sql.Stmt).Close
+        - (*database/sql.Tx).Rollback
+        - (*database/sql.DB).Close
+        - (*os.File).Close
+        # The store's own Close, which just closes the sql.DB above.
+        - (*github.com/mjnitz02/media-compressor/internal/store.Store).Close
+        # Cleanup of a temp file that is either already gone or about to be
+        # irrelevant; see the comments at both call sites.
+        - os.Remove
+        # Writing to stdout, stderr or an http.ResponseWriter. There is nowhere
+        # to report a failed write to the thing you would report it on.
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+        # Draining ffmpeg's stdout so it is not left blocked on a full pipe.
+        # The comment at the call site explains that Wait reports the real
+        # error.
+        - io.Copy
+
+    staticcheck:
+      # The default set, minus the QF ("quickfix") group. Those are mechanical
+      # refactoring suggestions rather than defect reports, and at least one is
+      # actively wrong for this code: QF1001 wants De Morgan's law applied to
+      # the character-class test in encode.go's shellQuote, which would turn
+      # one readable negated list into seven negated comparisons.
+      checks:
+        - all
+        - -QF*
+        - -ST1000
+        - -ST1003
+        - -ST1016
+        - -ST1020
+        - -ST1021
+        - -ST1022
+
+  exclusions:
+    rules:
+      # Tests are allowed to ignore errors from setup and teardown. A Close in
+      # a t.Cleanup has no way to fail the test it belongs to, and being strict
+      # here wraps every fixture in `if err != nil { t.Fatal(err) }` until the
+      # actual assertions are hard to find.
+      - path: _test\.go
+        linters: [errcheck]
+
+formatters:
+  # gofmt is already checked by the `test` job; listing it here means
+  # `golangci-lint fmt` can fix it rather than only report it.
+  enable:
+    - gofmt
